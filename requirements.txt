@@ -1,0 +1,31 @@
+# ===== Framework =====
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# ===== Validação e config =====
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# ===== Banco de dados =====
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# ===== Redis =====
+redis==5.2.1
+
+# ===== Logs estruturados =====
+structlog==24.4.0
+
+# ===== HTTP client (health checks, integrações) =====
+httpx==0.28.1
+
+# ===== Utilitários =====
+python-dotenv==1.0.1
+
+argon2-cffi>=23.1.0
+PyJWT>=2.8.0
+pyotp>=2.9.0
+qrcode[pil]>=7.4.2
+slowapi>=0.1.9
+pydantic[email]>=2.10.4
