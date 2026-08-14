@@ -4,6 +4,8 @@
 - Empresa/atendente: lista tickets do tenant, muda status (com histórico),
   atribui responsável, responde (pública ou interna).
 - Isolamento por tenant + propriedade em todas as rotas.
+- Hooks de notificação (Bloco 12): nova mensagem e mudança de status
+  geram notificações para o outro lado / cliente dono.
 """
 from uuid import UUID
 
@@ -14,6 +16,7 @@ from app.api.deps import get_current_user
 from app.core.exceptions import ForbiddenError, NotFoundError
 from app.database.session import get_db
 from app.models import User
+from app.models.enums import NotificationType
 from app.repositories.ticket import TicketRepository
 from app.schemas.ticket import (
     TicketAssignRequest,
@@ -27,6 +30,7 @@ from app.schemas.ticket import (
     TicketStatusUpdate,
 )
 from app.services.audit import record_audit
+from app.services.notification import notify_customer, notify_user
 
 router = APIRouter(prefix="/tickets", tags=["Tickets"])
 
@@ -133,6 +137,22 @@ async def add_message(
         content=body.content,
         is_internal=body.is_internal,
     )
+    # Hook de notificação (Bloco 12): avisa o outro lado do ticket.
+    if not body.is_internal:
+        if user.customer_id and ticket.assignee_id:
+            await notify_user(
+                db, user.tenant_id, ticket.assignee_id,
+                NotificationType.TICKET,
+                f"Novo comentário no ticket {ticket.number}",
+                body.content[:200],
+            )
+        elif not user.customer_id and ticket.customer_id:
+            await notify_customer(
+                db, user.tenant_id, ticket.customer_id,
+                NotificationType.TICKET,
+                f"Novo comentário no ticket {ticket.number}",
+                body.content[:200],
+            )
     await db.commit()
     return msg
 
@@ -149,6 +169,14 @@ async def update_status(
     ticket = await _get_ticket_for_user(db, user, ticket_id)
     repo = TicketRepository(db)
     await repo.update_status(ticket, body.status, body.note)
+    # Hook de notificação (Bloco 12): avisa o cliente dono do ticket.
+    if ticket.customer_id:
+        await notify_customer(
+            db, user.tenant_id, ticket.customer_id,
+            NotificationType.TICKET,
+            f"Ticket {ticket.number} atualizado",
+            f"Status alterado para {body.status.value}.",
+        )
     await record_audit(
         db, action="update", entity="ticket",
         entity_id=ticket.id, user_id=user.id, tenant_id=user.tenant_id,
