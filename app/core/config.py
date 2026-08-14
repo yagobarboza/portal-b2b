@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_URL: str = ""
+    
+    # ===== WEBHOOKS (seção 31) =====
+    WEBHOOK_SECRET: str = ""  # segredo para assinatura HMAC — definir no .env
+    WEBHOOK_RATE_LIMIT: int = 60      # eventos/minuto por integração
+    WEBHOOK_IDEMPOTENCY_TTL: int = 86400  # segundos p/ proteção contra replay
 
     # ===== CLOUDFLARE R2 (Bloco 6, seção 18) =====
     r2_account_id: str = ""
