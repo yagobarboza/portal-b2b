@@ -32,3 +32,7 @@ pydantic[email]>=2.10.4
 boto3>=1.34.0
 python-magic>=0.4.27
 python-multipart>=0.0.9
+
+# ===== Observabilidade (Bloco 13) =====
+prometheus-fastapi-instrumentator==7.0.0
+sentry-sdk[fastapi]==2.19.2

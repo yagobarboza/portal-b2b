@@ -63,27 +63,32 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_URL: str = ""
-    
+
     # ===== WEBHOOKS (seção 31) =====
     WEBHOOK_SECRET: str = ""  # segredo para assinatura HMAC — definir no .env
     WEBHOOK_RATE_LIMIT: int = 60      # eventos/minuto por integração
     WEBHOOK_IDEMPOTENCY_TTL: int = 86400  # segundos p/ proteção contra replay
 
     # ===== CLOUDFLARE R2 (Bloco 6, seção 18) =====
-    r2_account_id: str = ""
-    r2_access_key_id: str = ""
-    r2_secret_access_key: str = ""
-    r2_bucket_name: str = "portal-b2b"
-    r2_endpoint_url: str = ""
-    r2_public_base_url: str = ""
-    r2_signed_url_expiry: int = 900  # 15 min
+    R2_ACCOUNT_ID: str = ""
+    R2_ACCESS_KEY_ID: str = ""
+    R2_SECRET_ACCESS_KEY: str = ""
+    R2_BUCKET_NAME: str = "portal-b2b"
+    R2_ENDPOINT_URL: str = ""
+    R2_PUBLIC_BASE_URL: str = ""
+    R2_SIGNED_URL_EXPIRY: int = 900  # 15 min
 
-    # ===== CORS =====
+    # ===== CORS (seção 67) =====
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 
-    # ===== LOGGING =====
+    # ===== LOGGING (seção 43) =====
     LOG_LEVEL: str = "INFO"
     DATA_RETENTION_DAYS: int = 365  # Retenção de audit logs (LGPD, seção 45)
+
+    # ===== OBSERVABILIDADE (Bloco 13, seção 46) =====
+    ENVIRONMENT: str = "development"   # development | staging | production
+    SENTRY_DSN: str = ""              # se vazio, Sentry fica desligado
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
 
     @property
     def cors_origins_list(self) -> List[str]:
