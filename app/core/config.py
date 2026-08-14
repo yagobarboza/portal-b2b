@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     REDIS_DB: int = 0
     REDIS_URL: str = ""
 
+    # ===== CLOUDFLARE R2 (Bloco 6, seção 18) =====
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket_name: str = "portal-b2b"
+    r2_endpoint_url: str = ""
+    r2_public_base_url: str = ""
+    r2_signed_url_expiry: int = 900  # 15 min
+
     # ===== CORS =====
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 

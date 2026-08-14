@@ -17,6 +17,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Instala libmagic (necessário para o python-magic validar MIME type — Bloco 6)
+# O metapacote libmagic1 resolve para libmagic1t64 no Debian trixie
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Cria usuário não-root (boa prática de segurança)
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
