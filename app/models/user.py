@@ -34,6 +34,12 @@ class User(Base, TimestampMixin):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    customer_id: Mapped[UUID | None] = mapped_column(
+    PGUUID(as_uuid=True),
+    ForeignKey("customers.id", ondelete="SET NULL"),
+    nullable=True,
+    index=True,
+    )
     status: Mapped[UserStatus] = mapped_column(
         pg_enum(UserStatus, "user_status"),
         nullable=False,
