@@ -23,9 +23,8 @@ from app.models.integration import ERPIntegration, SyncExecution, WebhookEvent
 from app.models.notification import Notification
 from app.models.order import Order, OrderItem, OrderStatusHistory
 from app.models.rbac import Permission, Role, role_permissions, user_roles
-from app.models.ticket import Ticket, TicketMessage
+from app.models.ticket import Ticket, TicketMessage, TicketStatusHistory
 from app.models.user import User
-from app.models.catalog import Category, CustomerPrice, PriceList, Product
 
 __all__ = [
     "AuditLog",
@@ -54,6 +53,7 @@ __all__ = [
     "SyncExecution",
     "Ticket",
     "TicketMessage",
+    "TicketStatusHistory",
     "User",
     "WebhookEvent",
     "catalog_products",

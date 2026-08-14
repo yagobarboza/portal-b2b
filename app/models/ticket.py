@@ -87,5 +87,35 @@ class TicketMessage(Base, TenantMixin, TimestampMixin):
     is_internal: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )  # visível só para a empresa
+    attachment_file_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     ticket: Mapped[Ticket] = relationship(back_populates="messages")
+
+class TicketStatusHistory(Base, TenantMixin, TimestampMixin):
+    """Histórico de alterações de status do ticket (seção 26)."""
+    __tablename__ = "ticket_status_history"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    ticket_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("tickets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    from_status: Mapped[TicketStatus | None] = mapped_column(
+        pg_enum(TicketStatus, "ticket_status"),
+        nullable=True,
+    )
+    to_status: Mapped[TicketStatus] = mapped_column(
+        pg_enum(TicketStatus, "ticket_status"),
+        nullable=False,
+    )
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
