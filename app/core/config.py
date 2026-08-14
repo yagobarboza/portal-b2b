@@ -90,6 +90,14 @@ class Settings(BaseSettings):
     SENTRY_DSN: str = ""              # se vazio, Sentry fica desligado
     SENTRY_TRACES_SAMPLE_RATE: float = 0.1
 
+    # ===== POOL DE CONEXÕES (Bloco 14 — seção 54) =====
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_RECYCLE: int = 1800  # segundos
+
+    # ===== CACHE CATÁLOGO (Bloco 14 — seção 53) =====
+    CATALOG_CACHE_TTL: int = 60  # segundos
+
     @property
     def cors_origins_list(self) -> List[str]:
         """Converte a string de CORS do .env em lista."""
