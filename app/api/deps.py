@@ -8,6 +8,7 @@ from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cookies import ACCESS_COOKIE
+from app.core.context import TenantContext
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.core.permissions import SUPER_ADMIN
 from app.core.tokens import TokenError, decode_token, ACCESS_TYPE
@@ -36,6 +37,13 @@ async def get_current_user(
     user = await users.get(payload["sub"])
     if user.status.value != "active":
         raise UnauthorizedError("Não autenticado.")
+    # Popula o TenantContext com o tenant do usuário autenticado (seção 5)
+    # Garante isolamento multi-tenant em todas as queries do request.
+    TenantContext.set(
+        tenant_id=user.tenant_id,
+        user_id=user.id,
+        is_super_admin=user.is_super_admin,
+    )
     return user
 
 def _user_permissions(user: User) -> set[str]:

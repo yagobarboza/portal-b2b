@@ -92,8 +92,11 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
         # NUNCA expõe o erro real em produção (seção 15)
-        # Em dev, loga o erro completo para diagnóstico
         import logging
         logger = logging.getLogger("app")
-        logger.error("unhandled_error", exc_info=exc, path=str(request.url.path))
+        logger.error(
+            "unhandled_error",
+            exc_info=exc,
+            extra={"path": str(request.url.path)},
+        )
         return _error_response(500, "INTERNAL_ERROR", "Erro interno. Tente novamente mais tarde.")

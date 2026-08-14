@@ -25,6 +25,7 @@ from app.models.order import Order, OrderItem, OrderStatusHistory
 from app.models.rbac import Permission, Role, role_permissions, user_roles
 from app.models.ticket import Ticket, TicketMessage
 from app.models.user import User
+from app.models.catalog import Category, CustomerPrice, PriceList, Product
 
 __all__ = [
     "AuditLog",
