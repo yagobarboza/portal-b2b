@@ -36,3 +36,7 @@ python-multipart>=0.0.9
 # ===== Observabilidade (Bloco 13) =====
 prometheus-fastapi-instrumentator==7.0.0
 sentry-sdk[fastapi]==2.19.2
+
+# ===== Testes (Bloco 15) =====
+pytest==8.3.4
+pytest-asyncio==0.25.2

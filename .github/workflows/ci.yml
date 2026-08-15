@@ -1,0 +1,37 @@
+name: CI — Portal B2B
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preparar .env
+        run: |
+          cp .env.example .env
+          echo "SECRET_KEY=ci-secret-$(openssl rand -hex 16)" >> .env
+          echo "SENTRY_DSN=" >> .env
+
+      - name: Subir postgres e redis
+        run: docker compose up -d postgres redis
+
+      - name: Construir imagem da API (com pytest)
+        run: docker compose build api
+
+      - name: Subir API e aplicar migrations
+        run: |
+          docker compose up -d api
+          docker compose exec -T api alembic upgrade head
+
+      # Substitua pelo seu script real de seed (cria agente@teste.com,
+      # cliente2@teste.com e usuarioB@teste.com antes da suíte rodar)
+      - name: Seed de dados de teste
+        run: docker compose exec -T api python scripts/seed.py || echo "Seed não encontrado — rode manualmente antes do CI"
+
+      - name: Rodar suíte de testes (Bloco 15)
+        run: docker compose exec -T api pytest tests/ -v

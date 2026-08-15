@@ -1,5 +1,5 @@
 # ---------- Estágio de build ----------
-FROM python:3.11-slim AS builder
+FROM python:3.11.9-slim AS builder
 
 WORKDIR /app
 
@@ -13,12 +13,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ---------- Estágio final ----------
-FROM python:3.11-slim
+FROM python:3.11.9-slim
 
 WORKDIR /app
 
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
 # Instala libmagic (necessário para o python-magic validar MIME type — Bloco 6)
-# O metapacote libmagic1 resolve para libmagic1t64 no Debian trixie
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
     && rm -rf /var/lib/apt/lists/*
@@ -29,9 +31,11 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 # Copia as dependências instaladas do estágio builder
 COPY --from=builder /install /usr/local
 
-# Copia o código da aplicação
+# Copia o código da aplicação (agora inclui o Alembic — necessário em produção)
 COPY app ./app
 COPY worker ./worker
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
 
 # Permissões para o usuário não-root
 RUN chown -R appuser:appuser /app

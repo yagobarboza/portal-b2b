@@ -31,3 +31,5 @@ logs/
 # Docker
 postgres_data/
 redis_data/
+
+.run-tests.ps1

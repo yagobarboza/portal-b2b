@@ -50,6 +50,5 @@ def validate_password_strength(password: str) -> None:
 
     if errors:
         raise ValidationFailedError(
-            message="A senha não atende à política de segurança.",
-            details={"requirements": errors},
+            "A senha não atende à política de segurança."
         )

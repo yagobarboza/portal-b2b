@@ -50,6 +50,7 @@ services:
       - ./worker:/app/worker
       - ./alembic:/app/alembic
       - ./alembic.ini:/app/alembic.ini
+      - ./tests:/app/tests
     ports:
       - "8000:8000"
     depends_on:

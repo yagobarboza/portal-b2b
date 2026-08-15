@@ -212,29 +212,45 @@ async def upload_attachment(
     """Anexo do ticket (fluxo 61): validação (Bloco 6) -> R2 -> metadados -> mensagem."""
     ticket = await _get_ticket_for_user(db, user, ticket_id)
 
-    # Import lazy: assinaturas exatas do Bloco 6 (ver nota de verificação abaixo)
+    # Import lazy (Bloco 6)
+    from app.models.enums import FileOwnerType
     from app.repositories.file import FileRepository
     from app.services.file_validation import validate_upload
     from app.services.storage import StorageService
 
-    validated = await validate_upload(file)  # (nome_sanitizado, mime, size_bytes)
-    storage = StorageService()
-    object_key = await storage.upload_public(  # AJUSTAR conforme assinatura real do Bloco 6
-        file=file,
-        owner_type="ticket",
-        owner_id=ticket.id,
-        tenant_id=user.tenant_id,
+    # 1) Lê o conteúdo e valida (assinatura real: keyword-only)
+    content = await file.read()
+    ext, mime_type, size = validate_upload(
+        filename=file.filename or "",
+        content=content,
+        owner_type=FileOwnerType.TICKET,
     )
+
+    # 2) Envia para o R2 (assinatura real: upload_bytes)
+    storage = StorageService()
+    storage_key = storage.upload_bytes(
+        tenant_id=user.tenant_id,
+        owner_type=FileOwnerType.TICKET.value,
+        content=content,
+        ext=ext,
+        content_type=mime_type,
+    )
+
+    # 3) Metadados no PostgreSQL
     file_repo = FileRepository(db)
     file_row = await file_repo.create(
         tenant_id=user.tenant_id,
-        owner_type="ticket",
+        owner_type=FileOwnerType.TICKET,
         owner_id=ticket.id,
-        name=validated[0],
-        mime_type=validated[1],
-        size_bytes=validated[2],
-        storage_key=object_key,
+        original_name=file.filename or "",
+        storage_key=storage_key,
+        mime_type=mime_type,
+        size_bytes=size,
+        uploaded_by_user_id=user.id,
+        is_private=True,
     )
+
+    # 4) Mensagem com anexo
     repo = TicketRepository(db)
     msg = await repo.add_message(
         ticket.id,
