@@ -13,7 +13,6 @@ class Company(Base, TimestampMixin):
     É a raiz do isolamento: todas as demais entidades
     referenciam companies.id como tenant_id.
     """
-
     __tablename__ = "companies"
 
     id: Mapped[UUID] = mapped_column(
@@ -30,3 +29,14 @@ class Company(Base, TimestampMixin):
         default=CompanyStatus.ACTIVE,
         server_default=CompanyStatus.ACTIVE.value,
     )
+
+    # ===== White-Label / Branding (Fase 0 do frontend) =====
+    # Domínio público do portal deste tenant (ex.: b2b.labianchi.com.br)
+    domain: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
+    # Logotipo (URL assinada ou caminho no R2)
+    logo_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Favicon (URL)
+    favicon_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Cores da marca (formato hex, ex.: #0F4C81)
+    primary_color: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    secondary_color: Mapped[str | None] = mapped_column(String(7), nullable=True)

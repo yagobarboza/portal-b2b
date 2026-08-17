@@ -1,8 +1,8 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
-    auth, cart, catalog, chat, files, financial, health, integrations,
-    lgpd, notifications, orders, tickets, webhooks,
+    auth, cart, catalog, chat, company, files, financial, health,
+    integrations, lgpd, notifications, orders, tickets, webhooks,
 )
 
 api_router = APIRouter()
@@ -19,3 +19,4 @@ api_router.include_router(financial.router)
 api_router.include_router(integrations.router)
 api_router.include_router(webhooks.router)
 api_router.include_router(notifications.router)
+api_router.include_router(company.router)
