@@ -105,9 +105,28 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
-        """URL do banco: usa DATABASE_URL se definido, senão monta dos componentes."""
+        """URL do banco (async).
+
+        Usa DATABASE_URL se definido, senão monta dos componentes.
+        Endurecimento para produção:
+        - Garante o driver async (asyncpg) mesmo se a URL vier como
+          ``postgresql://`` (ex.: connection string padrão do Neon/Supabase).
+        - Converte ``?sslmode=require`` (dialeto psycopg2) em ``?ssl=require``
+          (dialeto asyncpg), que é o parâmetro aceito pelo driver async.
+        """
         if self.DATABASE_URL:
-            return self.DATABASE_URL
+            url = self.DATABASE_URL
+
+            # 1) Força o driver async se vier como postgresql://
+            if url.startswith("postgresql://"):
+                url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+            # 2) Converte sslmode (psycopg2) -> ssl (asyncpg) na query string
+            if "sslmode=" in url:
+                url = url.replace("sslmode=", "ssl=", 1)
+
+            return url
+
         return (
             f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
@@ -115,6 +134,11 @@ class Settings(BaseSettings):
 
     @property
     def redis_url(self) -> str:
+        """URL do Redis.
+
+        Usa REDIS_URL se definido, senão monta dos componentes.
+        Aceita tanto ``redis://`` (local) quanto ``rediss://`` (Upstash/TLS).
+        """
         if self.REDIS_URL:
             return self.REDIS_URL
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
