@@ -113,6 +113,8 @@ class Settings(BaseSettings):
           ``postgresql://`` (ex.: connection string padrão do Neon/Supabase).
         - Converte ``?sslmode=require`` (dialeto psycopg2) em ``?ssl=require``
           (dialeto asyncpg), que é o parâmetro aceito pelo driver async.
+        - Remove ``channel_binding=...`` (enviado pelo Neon e não suportado
+          pelo asyncpg) para evitar TypeError na conexão.
         """
         if self.DATABASE_URL:
             url = self.DATABASE_URL
@@ -124,6 +126,15 @@ class Settings(BaseSettings):
             # 2) Converte sslmode (psycopg2) -> ssl (asyncpg) na query string
             if "sslmode=" in url:
                 url = url.replace("sslmode=", "ssl=", 1)
+
+            # 3) Remove parâmetros que o asyncpg não aceita (ex.: channel_binding)
+            if "?" in url:
+                base, query = url.split("?", 1)
+                kept = [
+                    p for p in query.split("&")
+                    if p and not p.startswith("channel_binding")
+                ]
+                url = base + ("?" + "&".join(kept) if kept else "")
 
             return url
 
