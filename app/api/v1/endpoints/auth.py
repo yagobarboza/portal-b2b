@@ -60,6 +60,7 @@ from app.schemas.auth import (
     UserInfo,
 )
 from app.services.audit import record_audit
+from app.core.permissions import effective_permissions
 
 settings = get_settings()
 router = APIRouter(tags=["auth"])
@@ -228,6 +229,9 @@ async def me(request: Request, db: AsyncSession = Depends(get_db)) -> UserInfo:
         tenant_id=user.tenant_id,
         is_super_admin=user.is_super_admin,
         mfa_enabled=user.mfa_enabled,
+        customer_id=user.customer_id,
+        roles=[r.slug for r in user.roles],
+        permissions=sorted(effective_permissions(user)),
     )
 
 # ===== MFA (seção 11) =====

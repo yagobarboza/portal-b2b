@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, require_permission
 from app.core.exceptions import NotFoundError
+from app.core.permissions import CATALOG_MANAGE
 from app.database.session import get_db
 from app.models import User
 from app.repositories.catalog import (
@@ -47,7 +48,8 @@ router = APIRouter(prefix="/catalog", tags=["Catálogo"])
 async def create_category(
     body: CategoryCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("catalog.manage")),
+    user: User = Depends(require_permission(CATALOG_MANAGE)),
+
 ) -> CategoryRead:
     repo = CategoryRepository(db)
     category = await repo.create(body.model_dump())
@@ -83,7 +85,8 @@ async def update_category(
     category_id: UUID,
     body: CategoryUpdate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("catalog.manage")),
+    user: User = Depends(require_permission(CATALOG_MANAGE)),
+
 ) -> CategoryRead:
     repo = CategoryRepository(db)
     category = await repo.get(category_id)
@@ -104,7 +107,8 @@ async def update_category(
 async def create_product(
     body: ProductCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("catalog.manage")),
+    user: User = Depends(require_permission(CATALOG_MANAGE)),
+
 ) -> ProductRead:
     repo = ProductRepository(db)
     product = await repo.create(body.model_dump())
@@ -160,7 +164,8 @@ async def update_product(
     product_id: UUID,
     body: ProductUpdate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("catalog.manage")),
+    user: User = Depends(require_permission(CATALOG_MANAGE)),
+
 ) -> ProductRead:
     repo = ProductRepository(db)
     product = await repo.get(product_id)
@@ -181,7 +186,8 @@ async def update_product(
 async def create_price_list(
     body: PriceListCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("catalog.manage")),
+    user: User = Depends(require_permission(CATALOG_MANAGE)),
+
 ) -> PriceListRead:
     repo = PriceListRepository(db)
     price_list = await repo.create(body.model_dump())
@@ -197,7 +203,8 @@ async def create_price_list(
 async def create_customer_price(
     body: CustomerPriceCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(require_permission("catalog.manage")),
+    user: User = Depends(require_permission(CATALOG_MANAGE)),
+
 ) -> CustomerPriceRead:
     repo = CustomerPriceRepository(db)
     cp = await repo.create(body.model_dump())

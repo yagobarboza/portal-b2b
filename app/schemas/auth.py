@@ -16,12 +16,21 @@ class TokenResponse(BaseModel):
     expires_in: int
 
 class UserInfo(BaseModel):
+    """Usuário autenticado (GET /auth/me).
+
+    `roles` e `permissions` alimentam o frontend para renderizar
+    menus e controles por perfil (RBAC — seção 13). O backend
+    SEMPRE revalida a permissão no endpoint (nunca confia no front).
+    """
     id: UUID
-    email: str
+    email: EmailStr
     full_name: str
     tenant_id: UUID | None = None
     is_super_admin: bool = False
     mfa_enabled: bool = False
+    customer_id: UUID | None = None
+    roles: list[str] = []          # slugs das roles do usuário
+    permissions: list[str] = []    # códigos de permissão efetivos
 
 class MfaSetupResponse(BaseModel):
     secret: str

@@ -99,3 +99,20 @@ PERMISSION_CATALOG: list[dict] = [
     {"code": ADMIN_MANAGE, "name": "Administração", "module": "admin", "description": "Funções administrativas do tenant"},
     {"code": SUPER_ADMIN, "name": "Super Admin", "module": "admin", "description": "Acesso global à plataforma"},
 ]
+
+def effective_permissions(user) -> set[str]:
+    """Permissões efetivas do usuário (RBAC — seção 13).
+
+    - Super admin: acesso total.
+    - Demais: união das permissões de todas as roles do usuário.
+
+    Reutilizada por app/api/deps.py e pelo endpoint GET /auth/me
+    (evita duplicar a lógica de cálculo em dois lugares).
+    """
+    if user.is_super_admin:
+        return {SUPER_ADMIN}
+    perms: set[str] = set()
+    for role in user.roles:
+        for p in role.permissions:
+            perms.add(p.code)
+    return perms
