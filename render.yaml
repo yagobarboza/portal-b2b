@@ -1,0 +1,49 @@
+services:
+  - type: web
+    name: portal-b2b-api
+    runtime: docker
+    repo: https://github.com/yagobarboza/portal-b2b
+    plan: free
+    branch: main
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health/live
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: ENVIRONMENT
+        value: production
+      - key: APP_DEBUG
+        value: "false"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_ENDPOINT_URL
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: DB_POOL_SIZE
+        value: "3"
+      - key: DB_MAX_OVERFLOW
+        value: "2"
+      - key: DB_POOL_RECYCLE
+        value: "1800"
