@@ -98,6 +98,13 @@ class Settings(BaseSettings):
     # ===== CACHE CATÁLOGO (Bloco 14 — seção 53) =====
     CATALOG_CACHE_TTL: int = 60  # segundos
 
+    # ===== Resend (e-mail) e convites =====
+    RESEND_API_KEY: str = ""
+    RESEND_FROM_EMAIL: str = "Portal B2B <onboarding@resend.dev>"
+    FRONTEND_BASE_URL: str = "http://localhost:3000"
+    INVITE_TOKEN_EXPIRE_HOURS: int = 72
+    DEFAULT_ADMIN_ROLE_SLUG: str = "admin_empresa"
+
     @property
     def cors_origins_list(self) -> List[str]:
         """Converte a string de CORS do .env em lista."""

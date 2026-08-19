@@ -20,6 +20,7 @@ from app.models.customer import Customer
 from app.models.file import File
 from app.models.financial import FinancialAccount, FinancialPayment
 from app.models.integration import ERPIntegration, SyncExecution, WebhookEvent
+from app.models.invitation import Invitation
 from app.models.notification import Notification
 from app.models.order import Order, OrderItem, OrderStatusHistory
 from app.models.rbac import Permission, Role, role_permissions, user_roles
@@ -42,6 +43,7 @@ __all__ = [
     "File",
     "FinancialAccount",
     "FinancialPayment",
+    "Invitation",
     "Notification",
     "Order",
     "OrderItem",
