@@ -1,5 +1,4 @@
 """Endpoints de convites: criação de usuários e empresas.
-
 - POST   /invitations           -> admin da empresa convida usuário do tenant
 - GET    /invitations           -> lista convites do tenant
 - DELETE /invitations/{id}      -> cancela convite pendente
@@ -7,11 +6,9 @@
 """
 from datetime import datetime, timezone
 from uuid import UUID
-
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.api.deps import require_permission
 from app.core.config import get_settings
 from app.core.exceptions import ForbiddenError, ValidationFailedError
@@ -48,9 +45,14 @@ async def _company_name(db: AsyncSession, tenant_id: UUID | None) -> str:
     company = await db.get(Company, tenant_id)
     return company.name if company else "Portal B2B"
 
-async def _build_invite_url(token: str) -> str:
+async def _build_invite_url(token: str, base_url: str | None = None) -> str:
+    """Monta o link do convite.
+    Usa o domínio customizado da empresa quando existir;
+    caso contrário, cai no FRONTEND_BASE_URL global (fallback).
+    """
     settings = get_settings()
-    return f"{settings.FRONTEND_BASE_URL}/accept-invite?token={token}"
+    base = (base_url or settings.FRONTEND_BASE_URL).rstrip("/")
+    return f"{base}/accept-invite?token={token}"
 
 @router.post("/invitations", response_model=InviteResponse, status_code=201)
 async def create_invite(
@@ -84,14 +86,17 @@ async def create_invite(
     )
 
     settings = get_settings()
-    company_name = await _company_name(db, tenant_id)
+    # Domínio customizado da empresa (se houver) para o link do convite
+    company = await db.get(Company, tenant_id) if tenant_id else None
+    company_name = company.name if company else "Portal B2B"
     await send_invite_email(
         to_email=body.email,
-        invite_url=await _build_invite_url(token),
+        invite_url=await _build_invite_url(
+            token, company.domain if company else None
+        ),
         company_name=company_name,
         expires_hours=settings.INVITE_TOKEN_EXPIRE_HOURS,
     )
-
     await record_audit(
         db,
         action="invite_created",
@@ -103,7 +108,6 @@ async def create_invite(
         user_agent=request.headers.get("user-agent"),
     )
     await db.commit()
-
     return InviteResponse(
         id=invitation.id,
         email=invitation.email,
@@ -149,7 +153,6 @@ async def cancel_invite(
     invitation = await repo.get(invitation_id)
     if invitation.tenant_id != user.tenant_id and not user.is_super_admin:
         raise ForbiddenError("Você não pode cancelar este convite.")
-
     await repo.cancel(invitation)
     await record_audit(
         db,
@@ -171,7 +174,6 @@ async def accept_invite(
 ) -> dict:
     """Público: o convidado define a própria senha e o usuário é criado."""
     validate_password_strength(body.password)
-
     repo = InvitationRepository(db)
     invitation = await repo.get_by_token(body.token)
     if (
@@ -202,7 +204,6 @@ async def accept_invite(
         user_roles.insert().values(user_id=user.id, role_id=role.id)
     )
     await repo.mark_accepted(invitation)
-
     await record_audit(
         db,
         action="invite_accepted",

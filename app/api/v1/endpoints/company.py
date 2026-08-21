@@ -1,16 +1,13 @@
 """Endpoints de Company/Branding (white-label — Fase 0).
-
 GET  /companies/branding — identidade visual do tenant do usuário logado.
 POST /companies          — Super Admin cria empresa (tenant) + convida o admin
                            da empresa por e-mail (Resend).
-
 Usa o TenantContext (sessão autenticada) — nunca confia em domínio/ID vindo do front.
 """
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.api.deps import get_current_user, require_permission
 from app.core.config import get_settings
 from app.core.context import TenantContext
@@ -46,12 +43,10 @@ async def get_branding(
     tenant_id = TenantContext.tenant_id()
     if not tenant_id:
         raise NotFoundError("Tenant não identificado.")
-
     repo = CompanyRepository(db)
     company = await repo.get(tenant_id)
     if not company:
         raise NotFoundError("Empresa não encontrada.")
-
     return CompanyBranding.model_validate(company)
 
 @router.post("", status_code=201)
@@ -62,7 +57,6 @@ async def create_company_with_admin(
     user: User = Depends(require_permission(COMPANY_MANAGE)),
 ) -> dict:
     """Super Admin cria a empresa (tenant) + convida o admin da empresa.
-
     Fluxo:
     - Cria o Company (tenant) com branding inicial (cores/domínio opcionais).
     - Gera o convite e salva (commit) ANTES de tentar o envio de e-mail.
@@ -100,7 +94,6 @@ async def create_company_with_admin(
         tenant_id=company.id,
         invited_by=user.id,
     )
-
     await record_audit(
         db,
         action="company_create",
@@ -111,15 +104,16 @@ async def create_company_with_admin(
         ip=_client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
-
     await db.commit()
 
-    invite_url = f"{settings.FRONTEND_BASE_URL}/accept-invite?token={token}"
+    # Link do convite usa o domínio customizado da empresa (se houver),
+    # com fallback para o FRONTEND_BASE_URL global.
+    base_url = (company.domain or settings.FRONTEND_BASE_URL).rstrip("/")
+    invite_url = f"{base_url}/accept-invite?token={token}"
     await send_invite_email(
         to_email=body.admin_email,
         invite_url=invite_url,
         company_name=company.name,
         expires_hours=settings.INVITE_TOKEN_EXPIRE_HOURS,
     )
-
     return {"status": "ok", "company_id": company.id, "invitation_id": invitation.id}
