@@ -100,10 +100,10 @@ class Settings(BaseSettings):
 
     # ===== Resend (e-mail) e convites =====
     RESEND_API_KEY: str = ""
-    RESEND_FROM_EMAIL: str = "Portal B2B <onboarding@resend.dev>"
-    FRONTEND_BASE_URL: str = "http://localhost:3000"
+    RESEND_FROM_EMAIL: str = "Portal B2B <contato@miragewear.com.br>"
+    FRONTEND_BASE_URL: str = "https://tradebridge-io.lovable.app/"
     INVITE_TOKEN_EXPIRE_HOURS: int = 72
-    DEFAULT_ADMIN_ROLE_SLUG: str = "admin_empresa"
+    DEFAULT_ADMIN_ROLE_SLUG: str = "admin"
 
     @property
     def cors_origins_list(self) -> List[str]:
