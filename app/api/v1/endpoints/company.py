@@ -65,7 +65,9 @@ async def create_company_with_admin(
 
     Fluxo:
     - Cria o Company (tenant) com branding inicial (cores/domínio opcionais).
-    - Gera um convite e envia o link por e-mail (Resend).
+    - Gera o convite e salva (commit) ANTES de tentar o envio de e-mail.
+    - O envio de e-mail é não-bloqueante: se falhar, a empresa e o convite
+      já foram persistidos e o erro vira apenas um log.
     - O admin convidado clica no link, define a senha e vira o admin do tenant.
     """
     if not user.is_super_admin:
@@ -99,14 +101,6 @@ async def create_company_with_admin(
         invited_by=user.id,
     )
 
-    invite_url = f"{settings.FRONTEND_BASE_URL}/aceitar-convite?token={token}"
-    await send_invite_email(
-        to_email=body.admin_email,
-        invite_url=invite_url,
-        company_name=company.name,
-        expires_hours=settings.INVITE_TOKEN_EXPIRE_HOURS,
-    )
-
     await record_audit(
         db,
         action="company_create",
@@ -117,5 +111,17 @@ async def create_company_with_admin(
         ip=_client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
+
+    # 1) COMMIT primeiro: empresa + convite + audit são persistidos.
     await db.commit()
+
+    # 2) Depois do commit, tenta enviar o e-mail — falha não derruba nada.
+    invite_url = f"{settings.FRONTEND_BASE_URL}/aceitar-convite?token={token}"
+    await send_invite_email(
+        to_email=body.admin_email,
+        invite_url=invite_url,
+        company_name=company.name,
+        expires_hours=settings.INVITE_TOKEN_EXPIRE_HOURS,
+    )
+
     return {"status": "ok", "company_id": company.id, "invitation_id": invitation.id}

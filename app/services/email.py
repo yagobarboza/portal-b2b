@@ -1,7 +1,15 @@
-"""Envio de e-mails transacionais via Resend (httpx — já no requirements)."""
+"""Envio de e-mails transacionais via Resend (httpx — já no requirements).
+
+Regra de ouro: este módulo NUNCA lança exceção para o chamador.
+Falha no envio de e-mail não pode derrubar a criação de empresa/convite.
+"""
+import logging
+
 import httpx
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 async def send_invite_email(
     *,
@@ -10,9 +18,14 @@ async def send_invite_email(
     company_name: str,
     expires_hours: int,
 ) -> bool:
-    """Envia o e-mail de convite. Retorna False se o Resend não estiver configurado."""
+    """Envia o e-mail de convite.
+
+    Retorna True se enviado com sucesso, False se o Resend não estiver
+    configurado OU se a chamada falhar (erro de API, rede, etc.).
+    """
     settings = get_settings()
     if not settings.RESEND_API_KEY:
+        logger.warning("RESEND_API_KEY não configurada — convite não enviado por e-mail.")
         return False
 
     subject = f"Convite de acesso — {company_name}"
@@ -41,17 +54,22 @@ async def send_invite_email(
         f"(válido por {expires_hours} horas)."
     )
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(
-            "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
-            json={
-                "from": settings.RESEND_FROM_EMAIL,
-                "to": [to_email],
-                "subject": subject,
-                "html": html,
-                "text": text,
-            },
-        )
-        resp.raise_for_status()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+                json={
+                    "from": settings.RESEND_FROM_EMAIL,
+                    "to": [to_email],
+                    "subject": subject,
+                    "html": html,
+                    "text": text,
+                },
+            )
+            resp.raise_for_status()
+    except Exception:
+        # Falha no e-mail NÃO deve derrubar a criação da empresa/convite.
+        logger.exception("Falha ao enviar e-mail de convite para %s", to_email)
+        return False
     return True
