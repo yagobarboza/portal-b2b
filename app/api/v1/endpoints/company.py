@@ -112,11 +112,9 @@ async def create_company_with_admin(
         user_agent=request.headers.get("user-agent"),
     )
 
-    # 1) COMMIT primeiro: empresa + convite + audit são persistidos.
     await db.commit()
 
-    # 2) Depois do commit, tenta enviar o e-mail — falha não derruba nada.
-    invite_url = f"{settings.FRONTEND_BASE_URL}/aceitar-convite?token={token}"
+    invite_url = f"{settings.FRONTEND_BASE_URL}/accept-invite?token={token}"
     await send_invite_email(
         to_email=body.admin_email,
         invite_url=invite_url,

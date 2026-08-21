@@ -50,7 +50,7 @@ async def _company_name(db: AsyncSession, tenant_id: UUID | None) -> str:
 
 async def _build_invite_url(token: str) -> str:
     settings = get_settings()
-    return f"{settings.FRONTEND_BASE_URL}/aceitar-convite?token={token}"
+    return f"{settings.FRONTEND_BASE_URL}/accept-invite?token={token}"
 
 @router.post("/invitations", response_model=InviteResponse, status_code=201)
 async def create_invite(
