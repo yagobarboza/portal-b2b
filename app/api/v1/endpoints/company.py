@@ -1,7 +1,7 @@
 """Endpoints de Company/Branding (white-label — Fase 0).
-GET  /companies/branding — identidade visual do tenant do usuário logado.
-POST /companies          — Super Admin cria empresa (tenant) + convida o admin
-                           da empresa por e-mail (Resend).
+GET  /companies/branding        — identidade visual do tenant do usuário logado.
+GET  /companies/by-domain/{d}   — público: resolve o tenant pelo domínio (pré-login).
+POST /companies                 — Super Admin cria empresa (tenant) + convida o admin.
 Usa o TenantContext (sessão autenticada) — nunca confia em domínio/ID vindo do front.
 """
 from fastapi import APIRouter, Depends, Request
@@ -33,6 +33,22 @@ def _client_ip(request: Request) -> str:
     if forwarded:
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
+
+@router.get("/by-domain/{domain}", response_model=CompanyBranding)
+async def get_company_by_domain(
+    domain: str,
+    db: AsyncSession = Depends(get_db),
+) -> CompanyBranding:
+    """Público: resolve o tenant (branding) pelo domínio customizado.
+    Usado pelo frontend ANTES do login para aplicar o white-label
+    (ex.: b2b.fiobikeshop.com.br -> tenant da Fio Bikeshop).
+    Sem autenticação — roda na resolução do tenant pelo host.
+    """
+    repo = CompanyRepository(db)
+    company = await repo.get_by_domain(domain)
+    if not company:
+        raise NotFoundError("Empresa não encontrada para este domínio.")
+    return CompanyBranding.model_validate(company)
 
 @router.get("/branding", response_model=CompanyBranding)
 async def get_branding(
