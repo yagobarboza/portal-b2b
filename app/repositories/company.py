@@ -17,8 +17,9 @@ class CompanyRepository:
         return result.scalars().first()
 
     async def get_by_domain(self, domain: str) -> Company | None:
-        """Busca a empresa pelo domínio público (ex.: b2b.labianchi.com.br)."""
-        result = await self.db.execute(
-            select(Company).where(Company.domain == domain)
+        """Busca uma empresa pelo domínio customizado (case-insensitive)."""
+        stmt = select(Company).where(
+            Company.domain == domain.lower()
         )
+        result = await self.db.execute(stmt)
         return result.scalars().first()
