@@ -2,7 +2,8 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
     auth, cart, catalog, chat, company, files, financial, health,
-    integrations, lgpd, notifications, orders, tickets, webhooks, invitations
+    integrations, lgpd, notifications, orders, tickets, webhooks, 
+    invitations, customers, users, roles
 )
 
 api_router = APIRouter()
@@ -21,3 +22,6 @@ api_router.include_router(webhooks.router)
 api_router.include_router(notifications.router)
 api_router.include_router(company.router)
 api_router.include_router(invitations.router)
+api_router.include_router(customers.router)  # NOVO
+api_router.include_router(users.router)      # NOVO
+api_router.include_router(roles.router)      # NOVO

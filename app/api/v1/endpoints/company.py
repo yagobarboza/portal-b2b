@@ -24,8 +24,28 @@ from app.schemas.company import CompanyBranding
 from app.schemas.invitation import CompanyCreateRequest
 from app.services.audit import record_audit
 from app.services.email import send_invite_email
+from app.core.exceptions import RateLimitedError
+import time
+
+# Adicione no topo do arquivo:
+from app.core.exceptions import RateLimitedError
+import time
+
+# Cache simples em memória para rate limit (em produção, usar Redis)
+_domain_hits: dict[str, list[float]] = {}
+_DOMAIN_RATE_LIMIT = 30  # requisições
+_DOMAIN_WINDOW = 60  # segundos
 
 router = APIRouter(prefix="/companies", tags=["Companies"])
+
+def _check_domain_rate_limit(domain: str) -> None:
+    """Rate limit simples por domínio (anti-enumeração)."""
+    now = time.time()
+    hits = [t for t in _domain_hits.get(domain, []) if now - t < _DOMAIN_WINDOW]
+    if len(hits) >= _DOMAIN_RATE_LIMIT:
+        raise RateLimitedError("Muitas requisições. Tente novamente mais tarde.")
+    hits.append(now)
+    _domain_hits[domain] = hits
 
 def _client_ip(request: Request) -> str:
     """IP do cliente, respeitando proxy reverso (X-Forwarded-For)."""
@@ -39,11 +59,8 @@ async def get_company_by_domain(
     domain: str,
     db: AsyncSession = Depends(get_db),
 ) -> CompanyBranding:
-    """Público: resolve o tenant (branding) pelo domínio customizado.
-    Usado pelo frontend ANTES do login para aplicar o white-label
-    (ex.: b2b.fiobikeshop.com.br -> tenant da Fio Bikeshop).
-    Sem autenticação — roda na resolução do tenant pelo host.
-    """
+    """Público: resolve o tenant (branding) pelo domínio customizado."""
+    _check_domain_rate_limit(domain)  # <-- adicionado (rate limit)
     repo = CompanyRepository(db)
     company = await repo.get_by_domain(domain)
     if not company:

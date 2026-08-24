@@ -1,14 +1,9 @@
-"""Repositório de carrinho (Bloco 7 — seção 21).
-
-TODAS as queries filtram por tenant_id (isolamento, seção 5).
-"""
+"""Repositório de carrinho (cliente + visão do tenant)."""
 from decimal import Decimal
 from uuid import UUID
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-
 from app.core.context import TenantContext
 from app.models import Cart, CartItem
 from app.models.enums import CartStatus
@@ -47,6 +42,19 @@ class CartRepository:
         if not cart:
             cart = await self.create_cart(customer_id)
         return cart
+
+    async def list_carts_by_tenant(self) -> list[Cart]:
+        """Tenant: vê os carrinhos abertos de todos os clientes."""
+        result = await self.db.execute(
+            select(Cart)
+            .options(selectinload(Cart.items))
+            .where(
+                Cart.tenant_id == self._tenant(),
+                Cart.status == CartStatus.OPEN,
+            )
+            .order_by(Cart.updated_at.desc())
+        )
+        return list(result.scalars().all())
 
     async def get_item(self, item_id: UUID) -> CartItem | None:
         result = await self.db.execute(

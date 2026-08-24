@@ -1,17 +1,18 @@
-"""Endpoints de carrinho (Bloco 7 — seção 21).
-
-- Adicionar/remover/alterar quantidade.
-- Backend revalida produto, preço e quantidade (nunca confia no frontend).
-- Isolamento por tenant + propriedade (cliente só acessa o próprio carrinho).
+"""Endpoints de carrinho (cliente + visão do tenant).
+- GET /cart                    -> carrinho do cliente (cart:manage)
+- POST /cart/items             -> adicionar item (cliente)
+- PATCH /cart/items/{id}       -> alterar quantidade (cliente)
+- DELETE /cart/items/{id}      -> remover item (cliente)
+- GET /cart/tenant             -> carrinhos dos clientes (tenant, orders:read)
+- Isolamento por tenant + propriedade + RBAC
 """
 from decimal import Decimal
 from uuid import UUID
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_permission
 from app.core.exceptions import NotFoundError, ValidationError
+from app.core.permissions import CART_MANAGE, ORDER_READ
 from app.database.session import get_db
 from app.models import User
 from app.repositories.cart import CartRepository
@@ -25,11 +26,36 @@ def _get_customer(user: User) -> UUID:
         raise ValidationError("Usuário não vinculado a um cliente.")
     return user.customer_id
 
+def _is_agent(user: User) -> bool:
+    return user.is_super_admin or user.customer_id is None
+
+@router.get("/tenant", response_model=list[CartRead])
+async def list_tenant_carts(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission(ORDER_READ)),
+) -> list[CartRead]:
+    """Tenant: vê os carrinhos abertos de todos os clientes."""
+    if not _is_agent(user):
+        raise NotFoundError("Página não encontrada.")
+    repo = CartRepository(db)
+    carts = await repo.list_carts_by_tenant()
+    return [
+        CartRead(
+            id=c.id, customer_id=c.customer_id,
+            status=c.status.value, items=c.items,
+            total=sum(i.subtotal for i in c.items),
+        )
+        for c in carts
+    ]
+
 @router.get("", response_model=CartRead)
 async def get_cart(
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission(CART_MANAGE)),
 ) -> CartRead:
+    """Cliente: obtém o próprio carrinho."""
+    if _is_agent(user):
+        raise NotFoundError("Página não encontrada.")
     customer_id = _get_customer(user)
     repo = CartRepository(db)
     cart = await repo.get_or_create_open_cart(customer_id)
@@ -43,8 +69,10 @@ async def get_cart(
 async def add_item(
     body: CartItemAdd,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission(CART_MANAGE)),
 ) -> CartItemRead:
+    if _is_agent(user):
+        raise NotFoundError("Página não encontrada.")
     customer_id = _get_customer(user)
     product, price, _ = await validate_cart_item(
         db, body.product_id, body.quantity, customer_id
@@ -60,8 +88,10 @@ async def update_quantity(
     item_id: UUID,
     body: CartItemUpdate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission(CART_MANAGE)),
 ) -> CartItemRead:
+    if _is_agent(user):
+        raise NotFoundError("Página não encontrada.")
     customer_id = _get_customer(user)
     repo = CartRepository(db)
     cart = await repo.get_or_create_open_cart(customer_id)
@@ -79,8 +109,10 @@ async def update_quantity(
 async def remove_item(
     item_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission(CART_MANAGE)),
 ) -> None:
+    if _is_agent(user):
+        raise NotFoundError("Página não encontrada.")
     customer_id = _get_customer(user)
     repo = CartRepository(db)
     cart = await repo.get_or_create_open_cart(customer_id)

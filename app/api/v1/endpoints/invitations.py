@@ -32,10 +32,17 @@ router = APIRouter(tags=["invitations"])
 async def _resolve_role(
     db: AsyncSession, role_slug: str, tenant_id: UUID | None
 ) -> Role | None:
-    """Resolve a role pelo slug (global ou do tenant)."""
-    stmt = select(Role).where(Role.slug == role_slug).where(
-        (Role.tenant_id.is_(None)) | (Role.tenant_id == tenant_id)
-    )
+    """Resolve a role pelo slug.
+    Para convites de usuário do tenant, RESTRINGE ao tenant
+    (não permite atribuir roles globais indevidas — evita privilege escalation).
+    """
+    stmt = select(Role).where(Role.slug == role_slug)
+    if tenant_id is not None:
+        # Usuário do tenant: só roles do próprio tenant
+        stmt = stmt.where(Role.tenant_id == tenant_id)
+    else:
+        # Super Admin criando empresa: pode usar role global
+        stmt = stmt.where(Role.tenant_id.is_(None))
     result = await db.execute(stmt)
     return result.scalars().first()
 
