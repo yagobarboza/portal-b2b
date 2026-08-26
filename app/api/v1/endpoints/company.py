@@ -1,19 +1,29 @@
 """Endpoints de Company/Branding (white-label — Fase 0).
+
 GET  /companies/branding        — identidade visual do tenant do usuário logado.
 GET  /companies/by-domain/{d}   — público: resolve o tenant pelo domínio (pré-login).
 POST /companies                 — Super Admin cria empresa (tenant) + convida o admin.
+
 Usa o TenantContext (sessão autenticada) — nunca confia em domínio/ID vindo do front.
+Rate limit do by-domain via Redis (Bloco 17) — funciona com múltiplas instâncias.
 """
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.deps import get_current_user, require_permission
 from app.core.config import get_settings
 from app.core.context import TenantContext
-from app.core.exceptions import ForbiddenError, NotFoundError, ValidationFailedError
+from app.core.exceptions import (
+    ForbiddenError,
+    NotFoundError,
+    RateLimitedError,
+    ValidationFailedError,
+)
 from app.core.invitations import compute_expires_at, generate_invite_token
 from app.core.permissions import COMPANY_MANAGE
+from app.core.queue import enqueue_job
+from app.core.rate_limit import check_rate_limit
 from app.database.session import get_db
 from app.models import User
 from app.models.company import Company
@@ -23,29 +33,24 @@ from app.repositories.invitation import InvitationRepository
 from app.schemas.company import CompanyBranding
 from app.schemas.invitation import CompanyCreateRequest
 from app.services.audit import record_audit
-from app.services.email import send_invite_email
-from app.core.exceptions import RateLimitedError
-import time
-
-# Adicione no topo do arquivo:
-from app.core.exceptions import RateLimitedError
-import time
-
-# Cache simples em memória para rate limit (em produção, usar Redis)
-_domain_hits: dict[str, list[float]] = {}
-_DOMAIN_RATE_LIMIT = 30  # requisições
-_DOMAIN_WINDOW = 60  # segundos
 
 router = APIRouter(prefix="/companies", tags=["Companies"])
 
-def _check_domain_rate_limit(domain: str) -> None:
-    """Rate limit simples por domínio (anti-enumeração)."""
-    now = time.time()
-    hits = [t for t in _domain_hits.get(domain, []) if now - t < _DOMAIN_WINDOW]
-    if len(hits) >= _DOMAIN_RATE_LIMIT:
-        raise RateLimitedError("Muitas requisições. Tente novamente mais tarde.")
-    hits.append(now)
-    _domain_hits[domain] = hits
+# Limites do by-domain (anti-enumeração de tenants)
+_DOMAIN_RATE_LIMIT = 30   # requisições por janela
+_DOMAIN_WINDOW = 60       # segundos
+
+async def _check_domain_rate_limit(domain: str) -> None:
+    """Rate limit por domínio via Redis (anti-enumeração, multi-instância).
+
+    Fail-open: se o Redis falhar, a requisição passa (não derruba o serviço).
+    """
+    if await check_rate_limit(
+        f"domain:{domain}", _DOMAIN_RATE_LIMIT, _DOMAIN_WINDOW
+    ):
+        raise RateLimitedError(
+            "Muitas requisições. Tente novamente mais tarde."
+        )
 
 def _client_ip(request: Request) -> str:
     """IP do cliente, respeitando proxy reverso (X-Forwarded-For)."""
@@ -60,7 +65,7 @@ async def get_company_by_domain(
     db: AsyncSession = Depends(get_db),
 ) -> CompanyBranding:
     """Público: resolve o tenant (branding) pelo domínio customizado."""
-    _check_domain_rate_limit(domain)  # <-- adicionado (rate limit)
+    await _check_domain_rate_limit(domain)
     repo = CompanyRepository(db)
     company = await repo.get_by_domain(domain)
     if not company:
@@ -90,6 +95,7 @@ async def create_company_with_admin(
     user: User = Depends(require_permission(COMPANY_MANAGE)),
 ) -> dict:
     """Super Admin cria a empresa (tenant) + convida o admin da empresa.
+
     Fluxo:
     - Cria o Company (tenant) com branding inicial (cores/domínio opcionais).
     - Gera o convite e salva (commit) ANTES de tentar o envio de e-mail.
@@ -143,10 +149,16 @@ async def create_company_with_admin(
     # com fallback para o FRONTEND_BASE_URL global.
     base_url = (company.domain or settings.FRONTEND_BASE_URL).rstrip("/")
     invite_url = f"{base_url}/accept-invite?token={token}"
-    await send_invite_email(
+    # E-mail em background (fila ARQ) — não bloqueia a criação da empresa.
+    await enqueue_job(
+        "send_invite_email_job",
         to_email=body.admin_email,
         invite_url=invite_url,
         company_name=company.name,
         expires_hours=settings.INVITE_TOKEN_EXPIRE_HOURS,
     )
-    return {"status": "ok", "company_id": company.id, "invitation_id": invitation.id}
+    return {
+        "status": "ok",
+        "company_id": company.id,
+        "invitation_id": invitation.id,
+    }

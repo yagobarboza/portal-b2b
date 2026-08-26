@@ -3,14 +3,18 @@
 - Administração do tenant: criar/listar integrações, disparar syncs,
   consultar execuções (status, quantidades, erros — seção 33).
 - Apenas usuários da empresa (sem customer_id) gerenciam integrações.
+- Sync roda em BACKGROUND (fila ARQ — Bloco 16): o request responde
+  na hora com status "pending"; o worker executa e atualiza a execução.
 """
-from uuid import UUID
+from datetime import datetime, timezone
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.exceptions import ForbiddenError, NotFoundError
+from app.core.queue import enqueue_job
 from app.database.session import get_db
 from app.models import User
 from app.repositories.integration import IntegrationRepository
@@ -76,17 +80,55 @@ async def trigger_sync(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> SyncExecutionRead:
-    """Dispara uma sincronização manual (seção 32) — idempotente (seção 30)."""
+    """Dispara uma sincronização manual (seção 32) — idempotente (seção 30).
+
+    Processamento em background (fila ARQ — worker):
+    - O request responde na hora com a execução "pending".
+    - O worker roda `run_sync` (upsert por external_id) e atualiza a
+      execução para running/success/failed (seção 33).
+    - Fail-open: se o Redis estiver fora, executa de forma SÍNCRONA
+      (fallback) para o sync nunca se perder.
+    """
     if not _is_agent(user):
         raise ForbiddenError("Acesso negado.")
     integration = await _get_integration_for_user(db, user, integration_id)
-    sync = await run_sync(db, integration, body.entity)
+
+    enqueued = await enqueue_job(
+        "run_sync_job",
+        integration_id=str(integration.id),
+        entity=body.entity,
+    )
+    if not enqueued:
+        # Fallback síncrono: Redis indisponível — roda agora (não perde o sync).
+        sync = await run_sync(db, integration, body.entity)
+        await record_audit(
+            db, action="sync", entity="integration",
+            entity_id=integration.id, user_id=user.id,
+            tenant_id=user.tenant_id,
+        )
+        await db.commit()
+        return sync
+
     await record_audit(
         db, action="sync", entity="integration",
         entity_id=integration.id, user_id=user.id, tenant_id=user.tenant_id,
     )
     await db.commit()
-    return sync
+
+    # Execução enfileirada: resposta imediata com status "pending".
+    # A execução real (running/success/failed) aparece em GET .../syncs.
+    return SyncExecutionRead(
+        id=uuid4(),
+        integration_id=integration.id,
+        entity=body.entity,
+        status="pending",
+        processed=0,
+        errors=0,
+        started_at=None,
+        finished_at=None,
+        message=None,
+        created_at=datetime.now(timezone.utc),
+    )
 
 @router.get("/{integration_id}/syncs", response_model=list[SyncExecutionRead])
 async def list_syncs(

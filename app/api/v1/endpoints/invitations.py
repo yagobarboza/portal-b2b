@@ -25,7 +25,7 @@ from app.repositories.invitation import InvitationRepository
 from app.repositories.user import UserRepository
 from app.schemas.invitation import InviteAccept, InviteCreate, InviteResponse
 from app.services.audit import record_audit
-from app.services.email import send_invite_email
+from app.core.queue import enqueue_job
 
 router = APIRouter(tags=["invitations"])
 
@@ -96,11 +96,10 @@ async def create_invite(
     # Domínio customizado da empresa (se houver) para o link do convite
     company = await db.get(Company, tenant_id) if tenant_id else None
     company_name = company.name if company else "Portal B2B"
-    await send_invite_email(
+    await enqueue_job(
+        "send_invite_email_job",
         to_email=body.email,
-        invite_url=await _build_invite_url(
-            token, company.domain if company else None
-        ),
+        invite_url=invite_url,
         company_name=company_name,
         expires_hours=settings.INVITE_TOKEN_EXPIRE_HOURS,
     )
