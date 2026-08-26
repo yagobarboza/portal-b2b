@@ -40,6 +40,7 @@ from app.schemas.catalog import (
 )
 from app.services.audit import record_audit
 from app.services.pricing import calculate_product_price
+from app.services.product_images import attach_product_images
 
 router = APIRouter(prefix="/catalog", tags=["Catálogo"])
 
@@ -139,8 +140,18 @@ async def list_products(
         page_size=params.page_size,
     )
     pages = (total + params.page_size - 1) // params.page_size
+
+    # Resolve a URL da imagem de cada produto em UMA query (R2 signed URL)
+    image_urls = await attach_product_images(db, items)
+    enriched = [
+        ProductRead.model_validate(p).model_copy(
+            update={"image_url": image_urls.get(p.id)}
+        )
+        for p in items
+    ]
+
     return ProductPage(
-        items=items,
+        items=enriched,
         total=total,
         page=params.page,
         page_size=params.page_size,
@@ -157,7 +168,11 @@ async def get_product(
     product = await repo.get(product_id)
     if not product:
         raise NotFoundError("Produto não encontrado.")
-    return product
+
+    image_urls = await attach_product_images(db, [product])
+    return ProductRead.model_validate(product).model_copy(
+        update={"image_url": image_urls.get(product.id)}
+    )
 
 @router.patch("/products/{product_id}", response_model=ProductRead)
 async def update_product(

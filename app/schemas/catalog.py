@@ -57,6 +57,7 @@ class ProductRead(ProductBase):
     id: UUID
     status: str
     created_at: datetime
+    image_url: str | None = None  # Signed URL da imagem principal (R2) — resolvida pelo backend
 
 # ---------- Paginação ----------
 class ProductListParams(BaseModel):
