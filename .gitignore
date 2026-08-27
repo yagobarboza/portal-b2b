@@ -36,3 +36,9 @@ redis_data/
 
 # Scripts de desenvolvimento/seed
 app/scripts/
+
+# Testes
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
