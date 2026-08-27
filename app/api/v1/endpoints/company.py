@@ -5,7 +5,8 @@ GET  /companies/branding        — identidade visual do tenant do usuário loga
 GET  /companies/by-domain/{d}   — público: resolve o tenant pelo domínio (pré-login).
 POST /companies                 — Super Admin cria empresa (tenant) + convida o admin.
                                    Também cria as roles padrão do tenant (RBAC).
-PATCH /companies/{id}/status    — Super Admin inativa/reativa a empresa em cascata.
+PATCH /companies/{id}/status    — Super Admin inativa/reativa a empresa em cascata
+                                   e notifica o admin por e-mail (NYD B2B).
 
 Usa o TenantContext (sessão autenticada) — nunca confia em domínio/ID vindo do front.
 Rate limit do by-domain via Redis (Bloco 17) — funciona com múltiplas instâncias.
@@ -57,7 +58,7 @@ from app.schemas.company import (
 )
 from app.schemas.invitation import CompanyCreateRequest
 from app.services.audit import record_audit
-from app.services.email import send_invite_email
+from app.services.email import send_company_status_email, send_invite_email
 from app.services.rbac import ROLE_DEFINITIONS
 
 router = APIRouter(prefix="/companies", tags=["Companies"])
@@ -275,6 +276,7 @@ async def create_company_with_admin(
 async def update_company_status(
     company_id: UUID,
     body: CompanyStatusUpdate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
@@ -286,8 +288,14 @@ async def update_company_status(
     - Produtos/Categorias/Tabelas de preço/Catálogos → soft delete.
     - Convites pendentes → cancelados.
     - Pedidos abertos (draft/submitted) → cancelados.
+    - Notifica o admin por e-mail (NYD B2B).
 
-    Reativar (status="active"): restaura usuários, clientes e dados do tenant.
+    Reativar (status="active"): restaura usuários, clientes e dados do tenant
+    e notifica o admin por e-mail (NYD B2B).
+
+    IMPORTANTE: NÃO reenvia convites ao reativar. O convite é uma etapa única
+    da criação da empresa; o reenvio pontual é feito por script manual
+    (scripts/resend_invite.py) quando necessário.
 
     Reversível — não apaga fisicamente (política de soft delete do projeto).
     """
@@ -366,6 +374,24 @@ async def update_company_status(
                 .where(model.tenant_id == company_id)
                 .values(is_deleted=False, deleted_at=None)
             )
+
+    # Notifica o admin por e-mail (NYD B2B) — e-mail do convite original do tenant.
+    # Busca os e-mails dos convites já criados para esta empresa.
+    admin_emails = {
+        inv.email
+        for inv in (
+            await db.execute(
+                select(Invitation).where(Invitation.tenant_id == company_id)
+            )
+        ).scalars()
+    }
+    for email in admin_emails:
+        background_tasks.add_task(
+            send_company_status_email,
+            to_email=email,
+            company_name=company.name,
+            status=new_status,
+        )
 
     await record_audit(
         db,
