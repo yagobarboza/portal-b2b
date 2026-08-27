@@ -31,8 +31,15 @@ async def seed_rbac(session: AsyncSession) -> None:
     }
 
     # 2) Roles de sistema (tenant_id NULL)
+    # IMPORTANTE: checa apenas roles de SISTEMA. Se checar todas as roles,
+    # uma role de tenant com o mesmo slug (ex.: "admin") impede a criação
+    # da role de sistema correspondente.
     existing_roles = {
-        r.slug for r in (await session.execute(select(Role))).scalars()
+        r.slug for r in (
+            await session.execute(
+                select(Role).where(Role.tenant_id.is_(None))
+            )
+        ).scalars()
     }
     for slug, cfg in ROLE_DEFINITIONS.items():
         if slug in existing_roles:

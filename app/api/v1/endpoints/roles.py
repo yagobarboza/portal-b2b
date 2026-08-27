@@ -105,14 +105,20 @@ async def update_role(
     """Edita uma role customizada do tenant (não edita roles de sistema)."""
     if not _is_agent(user):
         raise NotFoundError("Página não encontrada.")
+
+    # 🔒 Opção B: role global (sistema) → imutável, mensagem clara (422)
+    system = await db.execute(
+        select(Role).where(Role.id == role_id, Role.tenant_id.is_(None))
+    )
+    if system.scalars().first():
+        raise ValidationError("Perfis de sistema não podem ser editados.")
+
     result = await db.execute(
         select(Role).where(Role.id == role_id, Role.tenant_id == user.tenant_id)
     )
     role = result.scalars().first()
     if not role:
         raise NotFoundError("Perfil não encontrado.")
-    if role.is_system:
-        raise ValidationError("Perfis de sistema não podem ser editados.")
 
     data = body.model_dump(exclude_unset=True)
     if "permission_codes" in data:
@@ -141,14 +147,20 @@ async def delete_role(
     """Exclui uma role customizada do tenant."""
     if not _is_agent(user):
         raise NotFoundError("Página não encontrada.")
+
+    # 🔒 Opção B: role global (sistema) → imutável, mensagem clara (422)
+    system = await db.execute(
+        select(Role).where(Role.id == role_id, Role.tenant_id.is_(None))
+    )
+    if system.scalars().first():
+        raise ValidationError("Perfis de sistema não podem ser excluídos.")
+
     result = await db.execute(
         select(Role).where(Role.id == role_id, Role.tenant_id == user.tenant_id)
     )
     role = result.scalars().first()
     if not role:
         raise NotFoundError("Perfil não encontrado.")
-    if role.is_system:
-        raise ValidationError("Perfis de sistema não podem ser excluídos.")
     await db.execute(role_permissions.delete().where(role_permissions.c.role_id == role.id))
     await db.delete(role)
     await record_audit(

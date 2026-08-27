@@ -110,14 +110,16 @@ class OrderRepository:
     ) -> Order:
         old = order.status
         order.status = new_status
-        self.db.add(
-            OrderStatusHistory(
-                tenant_id=self._tenant(),
-                order_id=order.id,
-                from_status=old,
-                to_status=new_status,
-                note=note,
-            )
+        history = OrderStatusHistory(
+            tenant_id=self._tenant(),
+            order_id=order.id,
+            from_status=old,
+            to_status=new_status,
+            note=note,
         )
+        self.db.add(history)
+        # 🔒 Sincroniza a coleção em memória: a sessão usa expire_on_commit=False,
+        # então sem isto o repo.get() seguinte retorna o histórico ANTIGO (stale).
+        order.status_history.append(history)
         await self.db.flush()
         return order

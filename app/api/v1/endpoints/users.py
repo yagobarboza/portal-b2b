@@ -78,6 +78,12 @@ async def update_user(
     if not target:
         raise NotFoundError("Usuário não encontrado.")
 
+    # 🔒 Impede auto-desativação (self-lockout): admin não pode se bloquear
+    if user_id == user.id:
+        new_status = body.model_dump(exclude_unset=True).get("status")
+        if new_status in ("inactive", "blocked"):
+            raise ValidationError("Você não pode desativar a si mesmo.")
+
     data = body.model_dump(exclude_unset=True)
     role_slugs = data.pop("role_slugs", None)
     if "status" in data and data["status"]:

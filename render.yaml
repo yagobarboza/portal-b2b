@@ -1,10 +1,13 @@
 services:
+  # ===== API (Web) =====
+  # ÚNICO serviço que roda as migrações (alembic upgrade head) no start.
+  # Nunca rode migração no worker — evita corrida entre 2 processos.
   - type: web
     name: portal-b2b-api
     runtime: docker
     repo: https://github.com/yagobarboza/portal-b2b
     plan: free
-    branch: main
+    branch: master            # ← corrigido (era "main", que não existe)
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health/live
     autoDeploy: true
@@ -48,12 +51,15 @@ services:
       - key: DB_POOL_RECYCLE
         value: "1800"
 
+  # ===== Worker (Background) =====
+  # Processo separado que consome as filas do Redis (jobs em background).
+  # startCommand só roda o worker — NÃO roda migração (a API já fez).
   - type: worker
     name: portal-b2b-worker
     runtime: docker
     repo: https://github.com/yagobarboza/portal-b2b
     plan: free
-    branch: main
+    branch: master            # ← corrigido (era "main")
     dockerfilePath: ./Dockerfile
     autoDeploy: true
     startCommand: python -m worker.main
@@ -62,6 +68,8 @@ services:
         value: production
       - key: ENVIRONMENT
         value: production
+      - key: APP_DEBUG
+        value: "false"
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
@@ -83,6 +91,8 @@ services:
       - key: R2_PUBLIC_BASE_URL
         sync: false
       - key: WEBHOOK_SECRET
+        sync: false
+      - key: SENTRY_DSN
         sync: false
       - key: DB_POOL_SIZE
         value: "3"
