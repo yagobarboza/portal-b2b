@@ -1,5 +1,6 @@
 """Schemas de Company/Branding (white-label Fase 0)."""
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -37,3 +38,7 @@ class CompanyPage(BaseModel):
     page: int
     page_size: int
     pages: int
+
+class CompanyStatusUpdate(BaseModel):
+    """Alteração de status da empresa (Super Admin)."""
+    status: Literal["active", "inactive"]
