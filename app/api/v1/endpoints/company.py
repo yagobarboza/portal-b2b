@@ -1,5 +1,6 @@
 """Endpoints de Company/Branding (white-label — Fase 0).
 
+GET  /companies                 — Super Admin lista todas as empresas (paginado).
 GET  /companies/branding        — identidade visual do tenant do usuário logado.
 GET  /companies/by-domain/{d}   — público: resolve o tenant pelo domínio (pré-login).
 POST /companies                 — Super Admin cria empresa (tenant) + convida o admin.
@@ -35,7 +36,7 @@ from app.models.enums import CompanyStatus
 from app.models.rbac import Role, role_permissions
 from app.repositories.company import CompanyRepository
 from app.repositories.invitation import InvitationRepository
-from app.schemas.company import CompanyBranding
+from app.schemas.company import CompanyBranding, CompanyPage, CompanyRead
 from app.schemas.invitation import CompanyCreateRequest
 from app.services.audit import record_audit
 from app.services.rbac import ROLE_DEFINITIONS
@@ -115,6 +116,29 @@ async def _ensure_tenant_roles(db: AsyncSession, tenant_id: UUID) -> None:
                         role_id=role.id, permission_id=perm.id
                     )
                 )
+
+@router.get("", response_model=CompanyPage)
+async def list_companies(
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CompanyPage:
+    """Lista todas as empresas (exclusivo Super Admin).
+
+    O Super Admin gerencia a plataforma inteira — vê todas as empresas.
+    Usuários de tenant não têm acesso (recebem 403).
+    """
+    if not user.is_super_admin:
+        raise ForbiddenError("Apenas o Super Admin pode listar empresas.")
+
+    repo = CompanyRepository(db)
+    items, total = await repo.list_all(search, page, page_size)
+    pages = (total + page_size - 1) // page_size
+    return CompanyPage(
+        items=items, total=total, page=page, page_size=page_size, pages=pages
+    )
 
 @router.get("/by-domain/{domain}", response_model=CompanyBranding)
 async def get_company_by_domain(
