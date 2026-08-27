@@ -3,6 +3,7 @@
 Fluxo:
 - Super Admin cria a empresa + admin da empresa (convite por e-mail).
 - Admin da empresa convida usuários da própria empresa.
+- Admin da empresa cria/importa clientes → convite de acesso (perfil CLIENTE).
 - O convidado clica no link, define a própria senha e o usuário é criado.
 """
 from datetime import datetime
@@ -34,6 +35,14 @@ class Invitation(Base, TimestampMixin):
     tenant_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    # NOVO: vínculo ao cliente (perfil CLIENTE) quando o convite é para cliente.
+    # No aceite, o User criado recebe este customer_id (acesso ao portal de compras).
+    customer_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("customers.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )

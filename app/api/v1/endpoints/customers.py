@@ -3,18 +3,26 @@
 - GET/PATCH/DELETE /customers/{id} -> detalhe/editar/desativar
 - POST /customers/import       -> importação em massa (CSV/Excel)
 - Isolamento por tenant + RBAC (customers:read/create/update)
+- Ao criar/importar cliente com e-mail: cria convite de acesso (perfil CLIENTE)
+  e envia o e-mail de boas-vindas (NYD B2B) em background.
 """
 import csv
 import io
 from uuid import UUID
-from fastapi import APIRouter, Depends, File, UploadFile
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.deps import get_current_user, require_permission
+from app.core.config import get_settings
 from app.core.exceptions import NotFoundError, ValidationError
+from app.core.invitations import compute_expires_at, generate_invite_token
 from app.core.permissions import CUSTOMER_CREATE, CUSTOMER_READ, CUSTOMER_UPDATE
 from app.database.session import get_db
 from app.models import User
+from app.models.company import Company
 from app.repositories.customer import CustomerRepository
+from app.repositories.invitation import InvitationRepository
 from app.schemas.customer import (
     CustomerCreate,
     CustomerImportResult,
@@ -23,11 +31,22 @@ from app.schemas.customer import (
     CustomerUpdate,
 )
 from app.services.audit import record_audit
+from app.services.email import send_customer_invite_email
+from app.services.rbac import ROLE_CLIENTE
 
 router = APIRouter(prefix="/customers", tags=["Clientes"])
 
 def _is_agent(user: User) -> bool:
     return user.is_super_admin or user.customer_id is None
+
+def _company_base_url(company: Company | None, settings) -> str:
+    """URL base do link de convite (domínio customizado ou FRONTEND_BASE_URL)."""
+    base = (
+        company.domain
+        if company and company.domain
+        else (settings.FRONTEND_BASE_URL or "")
+    )
+    return base.rstrip("/")
 
 @router.get("", response_model=CustomerPage)
 async def list_customers(
@@ -50,10 +69,11 @@ async def list_customers(
 @router.post("", response_model=CustomerRead, status_code=201)
 async def create_customer(
     body: CustomerCreate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission(CUSTOMER_CREATE)),
 ) -> CustomerRead:
-    """Cria um cliente do tenant (cadastro manual)."""
+    """Cria um cliente do tenant (cadastro manual) + envia convite de acesso."""
     if not _is_agent(user):
         raise NotFoundError("Página não encontrada.")
     repo = CustomerRepository(db)
@@ -62,6 +82,34 @@ async def create_customer(
         if existing:
             raise ValidationError("Já existe um cliente com este e-mail.")
     customer = await repo.create(body.model_dump())
+
+    # Convite de acesso ao portal (perfil CLIENTE) — só se tiver e-mail.
+    # O aceite cria um User com customer_id vinculado (perfil CLIENTE).
+    if body.email:
+        settings = get_settings()
+        token = generate_invite_token()
+        await InvitationRepository(db).create(
+            email=body.email,
+            full_name=customer.name,
+            role_slug=ROLE_CLIENTE,
+            token=token,
+            expires_at=compute_expires_at(),
+            tenant_id=user.tenant_id,
+            invited_by=user.id,
+            customer_id=customer.id,
+        )
+        company = await db.get(Company, user.tenant_id) if user.tenant_id else None
+        company_name = company.name if company else "Portal B2B"
+        base_url = _company_base_url(company, settings)
+        invite_url = f"{base_url}/accept-invite?token={token}"
+        background_tasks.add_task(
+            send_customer_invite_email,
+            to_email=body.email,
+            invite_url=invite_url,
+            company_name=company_name,
+            expires_hours=settings.INVITE_TOKEN_EXPIRE_HOURS,
+        )
+
     await record_audit(
         db, action="create", entity="customer",
         entity_id=customer.id, user_id=user.id, tenant_id=user.tenant_id,
@@ -126,11 +174,12 @@ async def delete_customer(
 
 @router.post("/import", response_model=CustomerImportResult)
 async def import_customers(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission(CUSTOMER_CREATE)),
 ) -> CustomerImportResult:
-    """Importa clientes em massa a partir de CSV (upload)."""
+    """Importa clientes em massa a partir de CSV + envia convite a cada um."""
     if not _is_agent(user):
         raise NotFoundError("Página não encontrada.")
     content = await file.read()
@@ -142,6 +191,7 @@ async def import_customers(
     created = 0
     skipped = 0
     errors: list[dict] = []
+    invites: list[dict] = []  # acumula convites para enviar em background
 
     try:
         text = content.decode("utf-8-sig")
@@ -158,7 +208,7 @@ async def import_customers(
                 if existing:
                     skipped += 1
                     continue
-            await repo.create(
+            customer = await repo.create(
                 {
                     "name": name,
                     "email": email,
@@ -167,10 +217,40 @@ async def import_customers(
                 }
             )
             created += 1
+            # Convite de acesso — só para clientes com e-mail
+            if email:
+                token = generate_invite_token()
+                await InvitationRepository(db).create(
+                    email=email,
+                    full_name=name,
+                    role_slug=ROLE_CLIENTE,
+                    token=token,
+                    expires_at=compute_expires_at(),
+                    tenant_id=user.tenant_id,
+                    invited_by=user.id,
+                    customer_id=customer.id,
+                )
+                invites.append({"email": email, "token": token})
         await db.commit()
     except Exception as exc:  # noqa: BLE001
         await db.rollback()
         raise ValidationError(f"Falha ao processar o arquivo: {exc}")
+
+    # Envia convites em background (não bloqueia o request)
+    if invites:
+        settings = get_settings()
+        company = await db.get(Company, user.tenant_id) if user.tenant_id else None
+        company_name = company.name if company else "Portal B2B"
+        base_url = _company_base_url(company, settings)
+        for inv in invites:
+            invite_url = f"{base_url}/accept-invite?token={inv['token']}"
+            background_tasks.add_task(
+                send_customer_invite_email,
+                to_email=inv["email"],
+                invite_url=invite_url,
+                company_name=company_name,
+                expires_hours=settings.INVITE_TOKEN_EXPIRE_HOURS,
+            )
 
     await record_audit(
         db, action="import", entity="customer",

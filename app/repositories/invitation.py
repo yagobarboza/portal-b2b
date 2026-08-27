@@ -23,9 +23,11 @@ class InvitationRepository:
         tenant_id: UUID | None = None,
         full_name: str | None = None,
         invited_by: UUID | None = None,
+        customer_id: UUID | None = None,  # NOVO: vínculo ao cliente
     ) -> Invitation:
         invitation = Invitation(
             tenant_id=tenant_id,
+            customer_id=customer_id,
             email=email,
             full_name=full_name,
             role_slug=role_slug,

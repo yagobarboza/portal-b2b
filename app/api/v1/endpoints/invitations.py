@@ -6,9 +6,11 @@
 """
 from datetime import datetime, timezone
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.deps import require_permission
 from app.core.config import get_settings
 from app.core.exceptions import ForbiddenError, ValidationFailedError
@@ -96,6 +98,7 @@ async def create_invite(
     # Domínio customizado da empresa (se houver) para o link do convite
     company = await db.get(Company, tenant_id) if tenant_id else None
     company_name = company.name if company else "Portal B2B"
+    invite_url = _build_invite_url(token, company.domain if company else None)
     await enqueue_job(
         "send_invite_email_job",
         to_email=body.email,
@@ -201,6 +204,7 @@ async def accept_invite(
         password_hash=hash_password(body.password),
         full_name=body.full_name,
         tenant_id=invitation.tenant_id,
+        customer_id=invitation.customer_id,  # NOVO: vincula o perfil CLIENTE
         is_super_admin=False,
         status=UserStatus.ACTIVE,
     )

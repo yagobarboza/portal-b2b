@@ -153,3 +153,71 @@ async def send_company_status_email(
         logger.exception("Falha ao enviar e-mail de status para %s", to_email)
         return False
     return True
+
+async def send_customer_invite_email(
+    *,
+    to_email: str,
+    invite_url: str,
+    company_name: str,
+    expires_hours: int,
+) -> bool:
+    """Convida um cliente a acessar o portal (NYD B2B).
+
+    Retorna True se enviado, False se o Resend não estiver configurado
+    ou se a chamada falhar (fail-safe, nunca lança exceção).
+    """
+    settings = get_settings()
+    if not settings.RESEND_API_KEY:
+        logger.warning("RESEND_API_KEY não configurada — convite de cliente não enviado.")
+        return False
+
+    subject = f"Você foi convidado para o portal {company_name} · NYD B2B"
+    html = f"""
+<div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; border: 1px solid #eee; border-radius: 12px; overflow: hidden;">
+  <div style="background: #111; color: #fff; padding: 24px; text-align: center;">
+    <span style="font-size: 20px; font-weight: 700; letter-spacing: 0.04em;">NYD B2B</span>
+  </div>
+  <div style="padding: 28px;">
+    <h2 style="color: #111; margin-top: 0;">Bem-vindo ao portal {company_name}!</h2>
+    <p style="color: #333; font-size: 15px; line-height: 1.6;">
+      Sua empresa criou um acesso para você no portal <strong>{company_name}</strong>.
+      Para começar, clique no botão abaixo e defina sua senha.
+    </p>
+    <p style="text-align: center; margin: 32px 0;">
+      <a href="{invite_url}"
+         style="background: #111; color: #fff; padding: 14px 28px;
+                border-radius: 8px; text-decoration: none; font-weight: bold;">
+        Criar minha senha
+      </a>
+    </p>
+    <p style="color: #777; font-size: 13px;">
+      O link é válido por {expires_hours} horas. Se você não esperava este convite,
+      ignore este e-mail.
+    </p>
+  </div>
+</div>
+"""
+    text = (
+        f"Bem-vindo ao portal {company_name}! Sua empresa criou um acesso para você. "
+        f"Clique no link para definir sua senha: {invite_url} "
+        f"(válido por {expires_hours} horas)."
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+                json={
+                    "from": settings.RESEND_FROM_EMAIL,
+                    "to": [to_email],
+                    "subject": subject,
+                    "html": html,
+                    "text": text,
+                },
+            )
+            resp.raise_for_status()
+    except Exception:
+        logger.exception("Falha ao enviar convite de cliente para %s", to_email)
+        return False
+    return True
