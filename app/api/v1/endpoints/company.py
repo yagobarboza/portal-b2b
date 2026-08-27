@@ -40,12 +40,11 @@ from app.models.customer import Customer
 from app.models.enums import (
     CompanyStatus,
     CustomerStatus,
-    InvitationStatus,
     OrderStatus,
     ProductStatus,
     UserStatus,
 )
-from app.models.invitation import Invitation
+from app.models.invitation import Invitation, InvitationStatus
 from app.models.order import Order
 from app.models.rbac import Role, role_permissions
 from app.repositories.company import CompanyRepository
