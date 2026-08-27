@@ -33,3 +33,6 @@ postgres_data/
 redis_data/
 
 .run-tests.ps1
+
+# Scripts de desenvolvimento/seed
+app/scripts/
