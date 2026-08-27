@@ -3,11 +3,15 @@
 GET  /companies/branding        — identidade visual do tenant do usuário logado.
 GET  /companies/by-domain/{d}   — público: resolve o tenant pelo domínio (pré-login).
 POST /companies                 — Super Admin cria empresa (tenant) + convida o admin.
+                                   Também cria as roles padrão do tenant (RBAC).
 
 Usa o TenantContext (sessão autenticada) — nunca confia em domínio/ID vindo do front.
 Rate limit do by-domain via Redis (Bloco 17) — funciona com múltiplas instâncias.
 """
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Request
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,14 +29,16 @@ from app.core.permissions import COMPANY_MANAGE
 from app.core.queue import enqueue_job
 from app.core.rate_limit import check_rate_limit
 from app.database.session import get_db
-from app.models import User
+from app.models import Permission, User
 from app.models.company import Company
 from app.models.enums import CompanyStatus
+from app.models.rbac import Role, role_permissions
 from app.repositories.company import CompanyRepository
 from app.repositories.invitation import InvitationRepository
 from app.schemas.company import CompanyBranding
 from app.schemas.invitation import CompanyCreateRequest
 from app.services.audit import record_audit
+from app.services.rbac import ROLE_DEFINITIONS
 
 router = APIRouter(prefix="/companies", tags=["Companies"])
 
@@ -58,6 +64,57 @@ def _client_ip(request: Request) -> str:
     if forwarded:
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
+
+async def _ensure_tenant_roles(db: AsyncSession, tenant_id: UUID) -> None:
+    """Cria as roles padrão do tenant com suas permissões (idempotente).
+
+    Usa ROLE_DEFINITIONS (app.services.rbac) para criar as roles de tenant
+    (admin, vendedor, financeiro, suporte, cliente) e vincula as permissões
+    do catálogo (app.core.permissions). Pode rodar várias vezes sem duplicar.
+
+    Isso garante que toda empresa nova nasça com o RBAC completo, sem
+    depender de seed manual (que foi removido do repositório).
+    """
+    # Permissões existentes no catálogo
+    perms = {
+        p.code: p
+        for p in (await db.execute(select(Permission))).scalars()
+    }
+
+    # Roles de tenant já existentes para este tenant
+    existing = {
+        r.slug for r in (
+            await db.execute(
+                select(Role).where(Role.tenant_id == tenant_id)
+            )
+        ).scalars()
+    }
+
+    for slug, cfg in ROLE_DEFINITIONS.items():
+        if cfg.get("global"):
+            continue  # roles globais (ex.: super_admin) não pertencem ao tenant
+
+        if slug in existing:
+            continue  # idempotente: não recria role já existente
+
+        role = Role(
+            tenant_id=tenant_id,
+            name=cfg["name"],
+            slug=slug,
+            description=f"Role {cfg['name']} do tenant",
+            is_system=cfg.get("is_system", True),
+        )
+        db.add(role)
+        await db.flush()
+
+        for code in cfg["permissions"]:
+            perm = perms.get(code)
+            if perm:
+                await db.execute(
+                    role_permissions.insert().values(
+                        role_id=role.id, permission_id=perm.id
+                    )
+                )
 
 @router.get("/by-domain/{domain}", response_model=CompanyBranding)
 async def get_company_by_domain(
@@ -98,6 +155,7 @@ async def create_company_with_admin(
 
     Fluxo:
     - Cria o Company (tenant) com branding inicial (cores/domínio opcionais).
+    - Cria as roles padrão do tenant com permissões (RBAC automático).
     - Gera o convite e salva (commit) ANTES de tentar o envio de e-mail.
     - O envio de e-mail é não-bloqueante: se falhar, a empresa e o convite
       já foram persistidos e o erro vira apenas um log.
@@ -121,6 +179,11 @@ async def create_company_with_admin(
     except IntegrityError:
         await db.rollback()
         raise ValidationFailedError("CNPJ ou slug já cadastrado.")
+
+    # Cria as roles padrão do tenant com permissões (RBAC automático).
+    # Sem isto, o convite do admin falharia com "role não existe" e os
+    # usuários do tenant ficariam sem permissões (403 em tudo).
+    await _ensure_tenant_roles(db, company.id)
 
     settings = get_settings()
     token = generate_invite_token()
