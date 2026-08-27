@@ -120,9 +120,18 @@ async def send_company_status_email(
   </div>
 </div>
 """
+
+    # Remove as tags HTML para a versão em texto puro.
+    # Calculado FORA da f-string: o Python 3.11 não permite backslash
+    # dentro da parte {…} de uma f-string (SyntaxError).
+    plain_message = (
+        message.replace("<strong>", "")
+        .replace("</strong>", "")
+        .replace("<br>", "\n")
+    )
     text = (
         f"NYD B2B — {heading}\n\n"
-        f"{message.replace('<strong>', '').replace('</strong>', '').replace('<br>', '\n')}\n\n"
+        f"{plain_message}\n\n"
         f"Este é um e-mail automático do NYD B2B."
     )
 
