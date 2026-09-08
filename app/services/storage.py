@@ -12,13 +12,13 @@ class StorageService:
     def __init__(self) -> None:
         self.client = boto3.client(
             "s3",
-            endpoint_url=settings.r2_endpoint_url,
-            aws_access_key_id=settings.r2_access_key_id,
-            aws_secret_access_key=settings.r2_secret_access_key,
+            endpoint_url=settings.R2_ENDPOINT_URL,
+            aws_access_key_id=settings.R2_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
             region_name="auto",
             config=Config(signature_version="s3v4"),
         )
-        self.bucket = settings.r2_bucket_name
+        self.bucket = settings.R2_BUCKET_NAME
 
     def _build_key(self, tenant_id: uuid.UUID, owner_type: str, ext: str) -> str:
         # Nunca usa o nome original como chave (seção 18)
@@ -43,7 +43,7 @@ class StorageService:
         return key
 
     def generate_signed_url(self, storage_key: str, expires_in: int | None = None) -> str:
-        expiry = expires_in or settings.r2_signed_url_expiry
+        expiry = expires_in or settings.R2_SIGNED_URL_EXPIRY
         return self.client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self.bucket, "Key": storage_key},
