@@ -17,7 +17,9 @@ from app.core.exceptions import ForbiddenError
 from app.core.tokens import ACCESS_TYPE, TokenError, decode_token
 from app.database.session import async_session_factory, get_db
 from app.models import User
+from app.models.enums import ChatRoomStatus, FileOwnerType
 from app.repositories.chat import ChatRepository
+from app.repositories.file import FileRepository
 from app.repositories.user import UserRepository
 from app.schemas.chat import (ChatMessageCreate, ChatMessagePage,
                               ChatMessageRead, ChatRoomRead,
@@ -25,6 +27,8 @@ from app.schemas.chat import (ChatMessageCreate, ChatMessagePage,
 from app.services.chat import (_msg_payload, get_chat_room_for_user,
                                publish_chat_message, redis_client,
                                send_chat_message)
+from app.services.file_validation import validate_upload
+from app.services.storage import StorageService
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -51,6 +55,28 @@ async def get_or_create_room(
     repo = ChatRepository(db)
     room = await repo.get_or_create_room(user.customer_id)
     await db.commit()
+    return room
+
+@router.post("/rooms/{room_id}/close", response_model=ChatRoomRead)
+async def close_room(
+    room_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ChatRoomRead:
+    """Encerra a conversa — apenas atendente (seção 23)."""
+    if user.customer_id:
+        raise ForbiddenError("Acesso negado.")
+    room = await get_chat_room_for_user(db, user, room_id)
+    if room.status == ChatRoomStatus.CLOSED:
+        return room
+    room.status = ChatRoomStatus.CLOSED
+    repo = ChatRepository(db)
+    msg = await repo.create_message(
+        room.id, "system", user.id, None,
+        "Conversa encerrada pelo atendimento.",
+    )
+    await db.commit()
+    await publish_chat_message(room.id, msg)
     return room
 
 # ---------- Mensagens (REST) ----------
@@ -122,33 +148,49 @@ async def upload_attachment(
     """Upload de anexo de chat: validação (Bloco 6) -> R2 -> metadados -> mensagem."""
     room = await get_chat_room_for_user(db, user, room_id)
 
-    # Import lazy para não quebrar o startup caso os nomes do Bloco 6 divirjam
-    from app.repositories.file import FileRepository
-    from app.services.file_validation import validate_uploaded_file
-    from app.services.storage import upload_to_r2
-
-    # 1) Validação do arquivo (seção 19: tamanho/extensão/MIME/conteúdo)
-    validated = await validate_uploaded_file(file)  # (nome_sanitizado, mime, size)
-    # 2) Upload para o R2 (seção 18) — chave = UUID, nunca nome do usuário
-    object_key = await upload_to_r2(file, owner_type="chat", owner_id=room.id, tenant_id=user.tenant_id)
+    # 1) Validação do arquivo (tamanho/extensão/MIME/conteúdo)
+    content = await file.read()
+    ext, mime_type, size = validate_upload(
+        filename=file.filename or "",
+        content=content,
+        owner_type=FileOwnerType.CHAT,
+    )
+    # 2) Upload para o R2 — chave = UUID, nunca nome do usuário
+    storage = StorageService()
+    storage_key = storage.upload_bytes(
+        tenant_id=user.tenant_id,
+        owner_type=FileOwnerType.CHAT.value,
+        content=content,
+        ext=ext,
+        content_type=mime_type,
+    )
     # 3) Metadados no PostgreSQL
     file_repo = FileRepository(db)
     file_row = await file_repo.create(
         tenant_id=user.tenant_id,
-        owner_type="chat",
+        owner_type=FileOwnerType.CHAT,
         owner_id=room.id,
-        name=validated[0],
-        mime_type=validated[1],
-        size_bytes=validated[2],
-        storage_key=object_key,
+        original_name=file.filename or "",
+        storage_key=storage_key,
+        mime_type=mime_type,
+        size_bytes=size,
+        uploaded_by_user_id=user.id,
+        is_private=False,
     )
-    # 4) Mensagem com anexo
+    # 4) Mensagem com o anexo
     msg = await send_chat_message(db, room, user, "📎 Anexo", file_row.id)
     return msg
 
 # ---------- WebSocket (seção 25) ----------
 @router.websocket("/ws/{room_id}")
 async def chat_websocket(websocket: WebSocket, room_id: UUID):
+    """Chat em tempo real: token -> tenant -> sala -> permissão.
+
+    Autenticação aceita DUAS formas:
+    - `?token=` na query string (apps mobile / clientes HTTP puros);
+    - cookie HttpOnly `access_token` (navegador via proxy Vite, mesma origem).
+    Um usuário de um tenant NUNCA ingressa em sala de outro tenant.
+    """
     token = websocket.query_params.get("token", "") or websocket.cookies.get("access_token", "")
     if not token:
         await websocket.close(code=4401, reason="Não autenticado")

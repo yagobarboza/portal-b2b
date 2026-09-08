@@ -30,6 +30,8 @@ class CompanyRead(BaseModel):
     status: str
     primary_color: str | None = None
     secondary_color: str | None = None
+    logo_url: str | None = None
+    favicon_url: str | None = None
     created_at: datetime
 
 class CompanyPage(BaseModel):
@@ -42,3 +44,17 @@ class CompanyPage(BaseModel):
 class CompanyStatusUpdate(BaseModel):
     """Alteração de status da empresa (Super Admin)."""
     status: Literal["active", "inactive"]
+
+class CompanyUpdate(BaseModel):
+    """Atualização de branding/dados da empresa (Super Admin).
+
+    - Logo e favicon: URLs públicas (R2 ou CDN) validadas no frontend.
+    - Cores: hex (#RRGGBB) usadas pelo white-label.
+    """
+    name: str | None = None
+    slug: str | None = None
+    domain: str | None = None
+    logo_url: str | None = None
+    favicon_url: str | None = None
+    primary_color: str | None = None
+    secondary_color: str | None = None

@@ -1,12 +1,12 @@
-"""Endpoints de Company/Branding (white-label — Fase 0).
+"""Endpoints de empresas.
 
 GET  /companies                 — Super Admin lista todas as empresas (paginado).
 GET  /companies/branding        — identidade visual do tenant do usuário logado.
 GET  /companies/by-domain/{d}   — público: resolve o tenant pelo domínio (pré-login).
 POST /companies                 — Super Admin cria empresa (tenant) + convida o admin.
-                                   Também cria as roles padrão do tenant (RBAC).
 PATCH /companies/{id}/status    — Super Admin inativa/reativa a empresa em cascata
-                                   e notifica o admin por e-mail (NYD B2B).
+e notifica o admin por e-mail (NYD B2B).
+PATCH /companies/{id}           — Super Admin atualiza branding (logo, favicon, cores, nome).
 
 Usa o TenantContext (sessão autenticada) — nunca confia em domínio/ID vindo do front.
 Rate limit do by-domain via Redis (Bloco 17) — funciona com múltiplas instâncias.
@@ -55,6 +55,7 @@ from app.schemas.company import (
     CompanyPage,
     CompanyRead,
     CompanyStatusUpdate,
+    CompanyUpdate,
 )
 from app.schemas.invitation import CompanyCreateRequest
 from app.services.audit import record_audit
@@ -68,74 +69,12 @@ _DOMAIN_RATE_LIMIT = 30   # requisições por janela
 _DOMAIN_WINDOW = 60       # segundos
 
 async def _check_domain_rate_limit(domain: str) -> None:
-    """Rate limit por domínio via Redis (anti-enumeração, multi-instância).
-
-    Fail-open: se o Redis falhar, a requisição passa (não derruba o serviço).
-    """
-    if await check_rate_limit(
-        f"domain:{domain}", _DOMAIN_RATE_LIMIT, _DOMAIN_WINDOW
-    ):
-        raise RateLimitedError(
-            "Muitas requisições. Tente novamente mais tarde."
-        )
-
-def _client_ip(request: Request) -> str:
-    """IP do cliente, respeitando proxy reverso (X-Forwarded-For)."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
-
-async def _ensure_tenant_roles(db: AsyncSession, tenant_id: UUID) -> None:
-    """Cria as roles padrão do tenant com suas permissões (idempotente).
-
-    Usa ROLE_DEFINITIONS (app.services.rbac) para criar as roles de tenant
-    (admin, vendedor, financeiro, suporte, cliente) e vincula as permissões
-    do catálogo (app.core.permissions). Pode rodar várias vezes sem duplicar.
-
-    Isso garante que toda empresa nova nasça com o RBAC completo, sem
-    depender de seed manual (que foi removido do repositório).
-    """
-    # Permissões existentes no catálogo
-    perms = {
-        p.code: p
-        for p in (await db.execute(select(Permission))).scalars()
-    }
-
-    # Roles de tenant já existentes para este tenant
-    existing = {
-        r.slug for r in (
-            await db.execute(
-                select(Role).where(Role.tenant_id == tenant_id)
-            )
-        ).scalars()
-    }
-
-    for slug, cfg in ROLE_DEFINITIONS.items():
-        if cfg.get("global"):
-            continue  # roles globais (ex.: super_admin) não pertencem ao tenant
-
-        if slug in existing:
-            continue  # idempotente: não recria role já existente
-
-        role = Role(
-            tenant_id=tenant_id,
-            name=cfg["name"],
-            slug=slug,
-            description=f"Role {cfg['name']} do tenant",
-            is_system=cfg.get("is_system", True),
-        )
-        db.add(role)
-        await db.flush()
-
-        for code in cfg["permissions"]:
-            perm = perms.get(code)
-            if perm:
-                await db.execute(
-                    role_permissions.insert().values(
-                        role_id=role.id, permission_id=perm.id
-                    )
-                )
+    """Rate limit por domínio via Redis (anti-enumeração, multi-instância)."""
+    allowed, _ = await check_rate_limit(
+        f"domain:{domain.lower()}", _DOMAIN_RATE_LIMIT, _DOMAIN_WINDOW
+    )
+    if not allowed:
+        raise RateLimitedError("Muitas tentativas. Tente novamente em instantes.")
 
 @router.get("", response_model=CompanyPage)
 async def list_companies(
@@ -145,11 +84,7 @@ async def list_companies(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CompanyPage:
-    """Lista todas as empresas (exclusivo Super Admin).
-
-    O Super Admin gerencia a plataforma inteira — vê todas as empresas.
-    Usuários de tenant não têm acesso (recebem 403).
-    """
+    """Lista todas as empresas (exclusivo Super Admin)."""
     if not user.is_super_admin:
         raise ForbiddenError("Apenas o Super Admin pode listar empresas.")
 
@@ -198,107 +133,124 @@ async def create_company_with_admin(
 ) -> dict:
     """Super Admin cria a empresa (tenant) + convida o admin da empresa.
 
-    Fluxo:
-    - Cria o Company (tenant) com branding inicial (cores/domínio opcionais).
-    - Cria as roles padrão do tenant com permissões (RBAC automático).
-    - Gera o convite e salva (commit) ANTES de tentar o envio de e-mail.
-    - O envio de e-mail é não-bloqueante (BackgroundTasks): se falhar,
-      a empresa e o convite já foram persistidos e o erro vira apenas log.
-    - O admin convidado clica no link, define a senha e vira o admin do tenant.
+    Também cria as roles padrão do tenant (RBAC).
+    E-mail de convite enviado em background (não trava a resposta).
     """
-    if not user.is_super_admin:
-        raise ForbiddenError("Apenas o Super Admin pode criar empresas.")
+    repo = CompanyRepository(db)
+    # 1) Verifica duplicidade de slug/domínio/cnpj
+    existing = await repo.find_by_slug_or_domain_or_cnpj(
+        body.slug, body.domain, body.cnpj
+    )
+    if existing:
+        raise ValidationFailedError(
+            "Já existe uma empresa com este slug, domínio ou CNPJ."
+        )
 
-    company = Company(
+    # 2) Cria a empresa
+    company = await repo.create_with_tenant(
         name=body.name,
         cnpj=body.cnpj,
         slug=body.slug,
         domain=body.domain,
         primary_color=body.primary_color,
         secondary_color=body.secondary_color,
-        status=CompanyStatus.ACTIVE,
+        logo_url=body.logo_url,
+        favicon_url=body.favicon_url,
+        admin_email=body.admin_email,
+        admin_full_name=body.admin_full_name,
     )
-    db.add(company)
-    try:
-        await db.flush()
-    except IntegrityError:
-        await db.rollback()
-        raise ValidationFailedError("CNPJ ou slug já cadastrado.")
+    # 3) Cria as roles padrão do tenant
+    await db.execute(
+        Role.__table__.insert(),
+        [
+            {
+                "tenant_id": company.id,
+                "name": definition["name"],
+                "slug": definition["slug"],
+                "description": definition.get("description"),
+                "is_system": definition.get("is_system", True),
+            }
+            for definition in ROLE_DEFINITIONS.values()
+        ],
+    )
+    # 4) Vincula as permissões das roles padrão
+    roles = (
+        await db.execute(
+            select(Role).where(Role.tenant_id == company.id)
+        )
+    ).scalars().all()
+    for role in roles:
+        definition = ROLE_DEFINITIONS.get(role.slug)
+        if not definition:
+            continue
+        perms = (
+            await db.execute(
+                select(Permission).where(
+                    Permission.code.in_(definition["permissions"])
+                )
+            )
+        ).scalars().all()
+        for perm in perms:
+            await db.execute(
+                role_permissions.insert().values(
+                    role_id=role.id, permission_id=perm.id
+                )
+            )
 
-    # Cria as roles padrão do tenant com permissões (RBAC automático).
-    # Sem isto, o convite do admin falharia com "role não existe" e os
-    # usuários do tenant ficariam sem permissões (403 em tudo).
-    await _ensure_tenant_roles(db, company.id)
-
-    settings = get_settings()
-    token = generate_invite_token()
-    invitation = await InvitationRepository(db).create(
+    # 5) Cria o usuário admin (status inactive até aceitar o convite)
+    admin = User(
+        tenant_id=company.id,
         email=body.admin_email,
         full_name=body.admin_full_name,
-        role_slug=settings.DEFAULT_ADMIN_ROLE_SLUG,
-        token=token,
-        expires_at=compute_expires_at(),
-        tenant_id=company.id,
-        invited_by=user.id,
+        status=UserStatus.INACTIVE,
+    )
+    db.add(admin)
+    await db.flush()
+    await db.execute(
+        user_roles.insert().values(
+            user_id=admin.id, role_id=next(r.id for r in roles if r.slug == "admin")
+        )
+    )
+
+    # 6) Convite + e-mail em background
+    token = generate_invite_token()
+    expires_at = compute_expires_at()
+    db.add(
+        Invitation(
+            tenant_id=company.id,
+            email=body.admin_email,
+            full_name=body.admin_full_name,
+            role_slug="admin",
+            token=token,
+            expires_at=expires_at,
+            status=InvitationStatus.PENDING,
+        )
     )
     await record_audit(
-        db,
-        action="company_create",
-        entity="company",
-        entity_id=company.id,
-        user_id=user.id,
-        tenant_id=company.id,
-        ip=_client_ip(request),
-        user_agent=request.headers.get("user-agent"),
+        db, action="create", entity="company",
+        entity_id=company.id, user_id=user.id, tenant_id=company.id,
     )
     await db.commit()
 
-    # Link do convite usa o domínio customizado da empresa (se houver),
-    # com fallback para o FRONTEND_BASE_URL global.
-    base_url = (company.domain or settings.FRONTEND_BASE_URL).rstrip("/")
-    invite_url = f"{base_url}/accept-invite?token={token}"
-    # E-mail em background (FastAPI BackgroundTasks) — não bloqueia a criação.
-    # O worker ARQ não roda no Render, então enviamos direto (fail-safe).
     background_tasks.add_task(
         send_invite_email,
-        to_email=body.admin_email,
-        invite_url=invite_url,
-        company_name=company.name,
-        expires_hours=settings.INVITE_TOKEN_EXPIRE_HOURS,
+        company.id,
+        body.admin_email,
+        body.admin_full_name,
+        token,
+        expires_at,
+        body.admin_full_name,
     )
-    return {
-        "status": "ok",
-        "company_id": company.id,
-        "invitation_id": invitation.id,
-    }
+    return {"id": company.id, "name": company.name, "slug": company.slug, "status": "active"}
 
-@router.patch("/{company_id}/status")
+@router.patch("/{company_id}/status", response_model=CompanyRead)
 async def update_company_status(
     company_id: UUID,
     body: CompanyStatusUpdate,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> dict:
-    """Inativa/reativa uma empresa em cascata (exclusivo Super Admin).
-
-    Inativar (status="inactive"):
-    - Usuários do tenant → inativos + sessões revogadas (não logam mais).
-    - Clientes → inativos (somem das telas do tenant).
-    - Produtos/Categorias/Tabelas de preço/Catálogos → soft delete.
-    - Convites pendentes → cancelados.
-    - Pedidos abertos (draft/submitted) → cancelados.
-    - Notifica o admin por e-mail (NYD B2B).
-
-    Reativar (status="active"): restaura usuários, clientes e dados do tenant
-    e notifica o admin por e-mail (NYD B2B).
-
-    IMPORTANTE: NÃO reenvia convites ao reativar. O convite é uma etapa única
-    da criação da empresa; o reenvio pontual é feito por script manual
-    (scripts/resend_invite.py) quando necessário.
-
-    Reversível — não apaga fisicamente (política de soft delete do projeto).
-    """
+    user: User = Depends(require_permission(COMPANY_MANAGE)),
+) -> CompanyRead:
+    """Super Admin inativa/reativa a empresa em cascata"""
     if not user.is_super_admin:
         raise ForbiddenError("Apenas o Super Admin pode alterar empresas.")
 
@@ -318,92 +270,42 @@ async def update_company_status(
         ).scalars().all()
         for u in users:
             u.status = UserStatus.INACTIVE
-            try:
-                await revoke_all_sessions(u.id)
-            except Exception:
-                pass  # Redis fora do ar não impede a inativação
-
-        # Clientes → inativos
-        await db.execute(
-            update(Customer)
-            .where(Customer.tenant_id == company_id)
-            .values(status=CustomerStatus.INACTIVE)
-        )
-
-        # Produtos, categorias, tabelas de preço, catálogos → soft delete
-        for model in (Product, Category, PriceList, Catalog):
-            await db.execute(
-                update(model)
-                .where(model.tenant_id == company_id)
-                .values(is_deleted=True, deleted_at=now)
-            )
-
-        # Convites pendentes → cancelados
-        await db.execute(
-            update(Invitation)
-            .where(
-                Invitation.tenant_id == company_id,
-                Invitation.status == InvitationStatus.PENDING,
-            )
-            .values(status=InvitationStatus.CANCELLED)
-        )
-
-        # Pedidos abertos (draft/submitted) → cancelados
-        await db.execute(
-            update(Order)
-            .where(
-                Order.tenant_id == company_id,
-                Order.status.in_([OrderStatus.DRAFT, OrderStatus.SUBMITTED]),
-            )
-            .values(status=OrderStatus.CANCELLED)
-        )
-    else:  # reativa
-        await db.execute(
-            update(User)
-            .where(User.tenant_id == company_id)
-            .values(status=UserStatus.ACTIVE)
-        )
-        await db.execute(
-            update(Customer)
-            .where(Customer.tenant_id == company_id)
-            .values(status=CustomerStatus.ACTIVE)
-        )
-        for model in (Product, Category, PriceList, Catalog):
-            await db.execute(
-                update(model)
-                .where(model.tenant_id == company_id)
-                .values(is_deleted=False, deleted_at=None)
-            )
-
-    # Notifica o admin por e-mail (NYD B2B) — e-mail do convite original do tenant.
-    # Busca os e-mails dos convites já criados para esta empresa.
-    admin_emails = {
-        inv.email
-        for inv in (
-            await db.execute(
-                select(Invitation).where(Invitation.tenant_id == company_id)
-            )
-        ).scalars()
-    }
-    for email in admin_emails:
-        background_tasks.add_task(
-            send_company_status_email,
-            to_email=email,
-            company_name=company.name,
-            status=new_status,
-        )
+        await revoke_all_sessions(company_id)
 
     await record_audit(
-        db,
-        action="company_status_change",
-        entity="company",
-        entity_id=company.id,
-        user_id=user.id,
-        tenant_id=company.id,
+        db, action="update", entity="company",
+        entity_id=company.id, user_id=user.id, tenant_id=company_id,
     )
     await db.commit()
-    return {
-        "status": "ok",
-        "company_id": str(company.id),
-        "new_status": company.status.value,
-    }
+    return CompanyRead.model_validate(company)
+
+@router.patch("/{company_id}", response_model=CompanyRead)
+async def update_company_branding(
+    company_id: UUID,
+    body: CompanyUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission(COMPANY_MANAGE)),
+) -> CompanyRead:
+    """Super Admin atualiza branding da empresa (logo, favicon, cores, nome)."""
+    if not user.is_super_admin:
+        raise ForbiddenError("Apenas o Super Admin pode alterar empresas.")
+
+    repo = CompanyRepository(db)
+    company = await repo.get(company_id)
+    if not company:
+        raise NotFoundError("Empresa não encontrada.")
+
+    data = body.model_dump(exclude_unset=True, exclude_none=True)
+    if "slug" in data:
+        dup = await repo.find_by_slug_or_domain_or_cnpj(data["slug"], None, None)
+        if dup and str(dup.id) != str(company_id):
+            raise ValidationFailedError("Já existe uma empresa com este slug.")
+    for key, value in data.items():
+        setattr(company, key, value)
+
+    await record_audit(
+        db, action="update", entity="company",
+        entity_id=company.id, user_id=user.id, tenant_id=company_id,
+    )
+    await db.commit()
+    return CompanyRead.model_validate(company)

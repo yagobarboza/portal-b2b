@@ -5,7 +5,6 @@
   atribui responsável, responde (pública ou interna).
 - Isolamento por tenant + propriedade em todas as rotas.
 - Hooks de notificação (Bloco 12): nova mensagem e mudança de status
-  geram notificações para o outro lado / cliente dono.
 """
 from uuid import UUID
 
@@ -16,7 +15,8 @@ from app.api.deps import get_current_user
 from app.core.exceptions import ForbiddenError, NotFoundError
 from app.database.session import get_db
 from app.models import User
-from app.models.enums import NotificationType
+from app.models.enums import FileOwnerType, NotificationType, TicketStatus
+from app.repositories.file import FileRepository
 from app.repositories.ticket import TicketRepository
 from app.schemas.ticket import (
     TicketAssignRequest,
@@ -30,15 +30,31 @@ from app.schemas.ticket import (
     TicketStatusUpdate,
 )
 from app.services.audit import record_audit
+from app.services.file_validation import validate_upload
 from app.services.notification import notify_customer, notify_user
+from app.services.storage import StorageService
 
 router = APIRouter(prefix="/tickets", tags=["Tickets"])
 
 def _is_agent(user: User) -> bool:
     return user.is_super_admin or user.customer_id is None
 
+def _ensure_can_respond(ticket, user: User) -> None:
+    """✅ Ticket resolvido/fechado: o cliente NÃO pode mais responder.
+
+    A empresa (atendente) continua podendo responder mesmo após o
+    fechamento, se necessário (ex.: reabrir conclusão).
+    """
+    if user.customer_id and ticket.status in (
+        TicketStatus.RESOLVED,
+        TicketStatus.CLOSED,
+    ):
+        raise ForbiddenError(
+            "Este ticket foi encerrado e não aceita novas mensagens do cliente."
+        )
+
 async def _get_ticket_for_user(db: AsyncSession, user: User, ticket_id: UUID):
-    """Valida tenant + propriedade/permissão (seções 14, 25).
+    """Valida tenant + propriedade/permissão.
 
     Mensagem genérica: quem não tem acesso recebe 404 (anti-vazamento).
     """
@@ -129,6 +145,8 @@ async def add_message(
     ticket = await _get_ticket_for_user(db, user, ticket_id)
     if body.is_internal and not _is_agent(user):
         raise ForbiddenError("Acesso negado.")  # nota interna só da empresa
+    # ✅ Bloqueio: ticket resolvido/fechado → cliente não manda mensagem
+    _ensure_can_respond(ticket, user)
     repo = TicketRepository(db)
     msg = await repo.add_message(
         ticket.id,
@@ -137,7 +155,7 @@ async def add_message(
         content=body.content,
         is_internal=body.is_internal,
     )
-    # Hook de notificação (Bloco 12): avisa o outro lado do ticket.
+    # Hook de notificação (Bloco 12)
     if not body.is_internal:
         if user.customer_id and ticket.assignee_id:
             await notify_user(
@@ -169,7 +187,6 @@ async def update_status(
     ticket = await _get_ticket_for_user(db, user, ticket_id)
     repo = TicketRepository(db)
     await repo.update_status(ticket, body.status, body.note)
-    # Hook de notificação (Bloco 12): avisa o cliente dono do ticket.
     if ticket.customer_id:
         await notify_customer(
             db, user.tenant_id, ticket.customer_id,
@@ -209,24 +226,17 @@ async def upload_attachment(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> TicketMessageRead:
-    """Anexo do ticket (fluxo 61): validação (Bloco 6) -> R2 -> metadados -> mensagem."""
+    """Anexo do ticket (fluxo 61): validação -> R2 -> metadados -> mensagem."""
     ticket = await _get_ticket_for_user(db, user, ticket_id)
+    # ✅ Bloqueio também para anexos em ticket encerrado
+    _ensure_can_respond(ticket, user)
 
-    # Import lazy (Bloco 6)
-    from app.models.enums import FileOwnerType
-    from app.repositories.file import FileRepository
-    from app.services.file_validation import validate_upload
-    from app.services.storage import StorageService
-
-    # 1) Lê o conteúdo e valida (assinatura real: keyword-only)
     content = await file.read()
     ext, mime_type, size = validate_upload(
         filename=file.filename or "",
         content=content,
         owner_type=FileOwnerType.TICKET,
     )
-
-    # 2) Envia para o R2 (assinatura real: upload_bytes)
     storage = StorageService()
     storage_key = storage.upload_bytes(
         tenant_id=user.tenant_id,
@@ -235,8 +245,6 @@ async def upload_attachment(
         ext=ext,
         content_type=mime_type,
     )
-
-    # 3) Metadados no PostgreSQL
     file_repo = FileRepository(db)
     file_row = await file_repo.create(
         tenant_id=user.tenant_id,
@@ -247,18 +255,30 @@ async def upload_attachment(
         mime_type=mime_type,
         size_bytes=size,
         uploaded_by_user_id=user.id,
-        is_private=True,
+        is_private=False,
     )
-
-    # 4) Mensagem com anexo
     repo = TicketRepository(db)
     msg = await repo.add_message(
         ticket.id,
         author_user_id=None if user.customer_id else user.id,
         author_customer_id=user.customer_id,
-        content="📎 Anexo",
+        content=f"📎 {file.filename or 'Anexo'}",
         is_internal=False,
         attachment_file_id=file_row.id,
     )
+    if user.customer_id and ticket.assignee_id:
+        await notify_user(
+            db, user.tenant_id, ticket.assignee_id,
+            NotificationType.TICKET,
+            f"Novo anexo no ticket {ticket.number}",
+            file.filename or "Anexo",
+        )
+    elif not user.customer_id and ticket.customer_id:
+        await notify_customer(
+            db, user.tenant_id, ticket.customer_id,
+            NotificationType.TICKET,
+            f"Novo anexo no ticket {ticket.number}",
+            file.filename or "Anexo",
+        )
     await db.commit()
     return msg

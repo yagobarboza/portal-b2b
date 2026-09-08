@@ -1,15 +1,18 @@
 """Endpoints de Usuários/Equipe do tenant (gestão).
-- GET    /users           -> listar usuários do tenant (users:read)
+
+- GET    /users           -> listar EQUIPE do tenant (users:read) — sem clientes
 - PATCH  /users/{id}      -> editar nome/telefone/status/roles (users:update)
 - DELETE /users/{id}      -> desativar usuário (users:delete)
 - CRIAÇÃO de usuário: SEMPRE via POST /invitations (fluxo de convite),
-  que restringe a role ao tenant e envia e-mail com link de aceite.
+que restringe a role ao tenant e envia e-mail com link de aceite.
 - Isolamento por tenant em todas as operações.
 """
 from uuid import UUID
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.deps import require_permission
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.permissions import USER_DELETE, USER_READ, USER_UPDATE
@@ -45,7 +48,7 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission(USER_READ)),
 ) -> UserPage:
-    """Lista usuários do tenant (apenas empresa)."""
+    """Lista usuários do tenant — apenas EQUIPE (sem clientes)."""
     if not _is_agent(user):
         raise NotFoundError("Página não encontrada.")
     repo = UserRepository(db)
@@ -78,31 +81,31 @@ async def update_user(
     if not target:
         raise NotFoundError("Usuário não encontrado.")
 
-    # 🔒 Impede auto-desativação (self-lockout): admin não pode se bloquear
+    # 🔒 Impede auto-desativação (self-lockout)
     if user_id == user.id:
         new_status = body.model_dump(exclude_unset=True).get("status")
         if new_status in ("inactive", "blocked"):
             raise ValidationError("Você não pode desativar a si mesmo.")
 
     data = body.model_dump(exclude_unset=True)
-    role_slugs = data.pop("role_slugs", None)
-    if "status" in data and data["status"]:
-        data["status"] = UserStatus(data["status"])
-
-    target = await repo.update(target, data)
-
-    if role_slugs is not None:
-        # Remove roles atuais e atribui as novas (restringidas ao tenant)
+    if "role_slugs" in data:
+        # Substitui as roles apenas por roles válidas do tenant
+        roles = []
+        for slug in data.pop("role_slugs"):
+            role = await _resolve_role(db, slug, user.tenant_id)
+            if role:
+                roles.append(role)
         await db.execute(
             user_roles.delete().where(user_roles.c.user_id == target.id)
         )
-        for slug in role_slugs:
-            role = await _resolve_role(db, slug, user.tenant_id)
-            if role:
-                await db.execute(
-                    user_roles.insert().values(user_id=target.id, role_id=role.id)
-                )
-
+        for role in roles:
+            await db.execute(
+                user_roles.insert().values(user_id=target.id, role_id=role.id)
+            )
+    if "status" in data:
+        target.status = UserStatus(data["status"])
+        data.pop("status")
+    await repo.update(target, data)
     await record_audit(
         db, action="update", entity="user",
         entity_id=target.id, user_id=user.id, tenant_id=user.tenant_id,

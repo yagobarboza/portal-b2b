@@ -1,8 +1,15 @@
-"""Repositório de usuários (autenticação + gestão de equipe)."""
+"""Repositório de usuários (autenticação + gestão de equipe).
+
+✅ A listagem de equipe (GET /users) agora EXCLUI clientes: apenas
+usuários de equipe do tenant (customer_id IS NULL) são retornados.
+Clientes aparecem SOMENTE no módulo de Clientes (GET /customers).
+"""
 from uuid import UUID
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
 from app.core.exceptions import NotFoundError
 from app.models import User
 
@@ -32,7 +39,11 @@ class UserRepository:
     async def list_by_tenant(
         self, tenant_id: UUID, page: int = 1, page_size: int = 20
     ) -> tuple[list[User], int]:
-        base = select(User).where(User.tenant_id == tenant_id)
+        """Lista apenas EQUIPE do tenant (exclui contas de cliente)."""
+        base = select(User).where(
+            User.tenant_id == tenant_id,
+            User.customer_id.is_(None),
+        )
         total = (
             await self.session.execute(
                 select(func.count()).select_from(base.subquery())
