@@ -3,6 +3,10 @@
 - REST: salas, mensagens (histórico), status de leitura, transferência, anexos.
 - WebSocket: /ws/{room_id}?token=... com validação de token/tenant/sala/
   permissão (seção 25) e Redis Pub/Sub para broadcast entre instâncias.
+
+✅ CORREÇÃO: POST /chat/rooms agora aceita o body opcional {"sector": ...}.
+Se a sala anterior estiver FECHADA, o repositório cria uma NOVA sala no
+setor escolhido — permitindo o cliente iniciar um novo atendimento.
 """
 import asyncio
 import json
@@ -17,13 +21,13 @@ from app.core.exceptions import ForbiddenError
 from app.core.tokens import ACCESS_TYPE, TokenError, decode_token
 from app.database.session import async_session_factory, get_db
 from app.models import User
-from app.models.enums import ChatRoomStatus, FileOwnerType
+from app.models.enums import ChatRoomStatus, ChatSector, FileOwnerType
 from app.repositories.chat import ChatRepository
 from app.repositories.file import FileRepository
 from app.repositories.user import UserRepository
 from app.schemas.chat import (ChatMessageCreate, ChatMessagePage,
-                              ChatMessageRead, ChatRoomRead,
-                              ChatTransferRequest)
+                              ChatMessageRead, ChatRoomCreate,
+                              ChatRoomRead, ChatTransferRequest)
 from app.services.chat import (_msg_payload, get_chat_room_for_user,
                                publish_chat_message, redis_client,
                                send_chat_message)
@@ -46,14 +50,21 @@ async def list_rooms(
 
 @router.post("/rooms", response_model=ChatRoomRead, status_code=201)
 async def get_or_create_room(
+    body: ChatRoomCreate | None = None,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> ChatRoomRead:
-    """Cliente: cria (ou obtém) a sala automática (seção 23)."""
+    """Cliente: cria (ou obtém a sala ABERTA) no setor escolhido (seção 23).
+
+    - Se houver uma sala ABERTA, reutiliza (mantém o setor dela).
+    - Se a anterior estiver FECHADA (ou não existir), cria uma NOVA sala
+      no setor informado pelo cliente (default: sales).
+    """
     if not user.customer_id:
         raise ForbiddenError("Acesso negado.")
+    sector = body.sector if body else ChatSector.SALES
     repo = ChatRepository(db)
-    room = await repo.get_or_create_room(user.customer_id)
+    room = await repo.get_or_create_room(user.customer_id, sector)
     await db.commit()
     return room
 
@@ -189,6 +200,7 @@ async def chat_websocket(websocket: WebSocket, room_id: UUID):
     Autenticação aceita DUAS formas:
     - `?token=` na query string (apps mobile / clientes HTTP puros);
     - cookie HttpOnly `access_token` (navegador via proxy Vite, mesma origem).
+
     Um usuário de um tenant NUNCA ingressa em sala de outro tenant.
     """
     token = websocket.query_params.get("token", "") or websocket.cookies.get("access_token", "")

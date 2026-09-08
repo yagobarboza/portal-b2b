@@ -7,10 +7,20 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.models.enums import ChatSector
 
 class ChatMessageCreate(BaseModel):
+    """Payload de envio de mensagem."""
     content: str = Field(min_length=1, max_length=4000)
+
+class ChatRoomCreate(BaseModel):
+    """Criação/recuperação de sala com o setor escolhido pelo cliente.
+
+    - setor: ChatSector (sales, commercial, financial, support, service).
+    - Default: SALES (mantém compatibilidade com clientes que não enviam body).
+    """
+    sector: ChatSector = ChatSector.SALES
 
 class ChatMessageRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     room_id: UUID
     sender_type: str
@@ -29,6 +39,7 @@ class ChatMessagePage(BaseModel):
 
 class ChatRoomRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     customer_id: UUID
     sector: str
@@ -36,4 +47,5 @@ class ChatRoomRead(BaseModel):
     created_at: datetime
 
 class ChatTransferRequest(BaseModel):
+    """Transferência de setor (apenas atendente)."""
     sector: ChatSector

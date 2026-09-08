@@ -3,6 +3,11 @@
 - Sala automática por cliente.
 - Mensagens persistentes no PostgreSQL (fonte da verdade).
 - TODAS as queries filtram por tenant_id (isolamento, seção 5).
+
+✅ CORREÇÃO: get_or_create_room reutiliza APENAS uma sala ABERTA.
+Se a sala existente estiver FECHADA (ou não existir), cria uma NOVA
+sala — permitindo que o cliente inicie um novo atendimento após o
+encerramento do anterior (com o setor escolhido na abertura).
 """
 from datetime import datetime, timezone
 from uuid import UUID
@@ -26,12 +31,19 @@ class ChatRepository:
     async def get_or_create_room(
         self, customer_id: UUID, sector: ChatSector = ChatSector.SALES
     ) -> ChatRoom:
-        """Sala automática única do cliente (seção 23)."""
+        """Sala automática do cliente.
+
+        Reutiliza APENAS a sala ABERTA existente. Se não houver sala
+        aberta (ou se a anterior estiver fechada), cria uma NOVA sala
+        no setor informado.
+        """
+        # 1) Procura uma sala ABERTA existente
         result = await self.db.execute(
             select(ChatRoom)
             .where(
                 ChatRoom.tenant_id == self._tenant(),
                 ChatRoom.customer_id == customer_id,
+                ChatRoom.status == ChatRoomStatus.OPEN,
             )
             .order_by(ChatRoom.created_at.asc())
             .limit(1)
@@ -40,6 +52,7 @@ class ChatRepository:
         if room:
             return room
 
+        # 2) Sem sala aberta → cria uma NOVA (com o setor escolhido)
         room = ChatRoom(
             tenant_id=self._tenant(),
             customer_id=customer_id,
@@ -80,7 +93,11 @@ class ChatRepository:
         return list(result.scalars().all())
 
     async def list_rooms_by_tenant(self) -> list[ChatRoom]:
-        """Atendentes: todas as salas do tenant."""
+        """Atendentes: todas as salas do tenant.
+
+        (Isolamento por SETOR, se desejado, entra como evolução futura —
+        hoje o atendente vê todas as salas do tenant.)
+        """
         result = await self.db.execute(
             select(ChatRoom)
             .where(ChatRoom.tenant_id == self._tenant())
