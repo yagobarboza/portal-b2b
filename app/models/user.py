@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin
-from app.models.enums import UserStatus, pg_enum
+from app.models.enums import ChatSector, UserStatus, pg_enum
 from app.models.rbac import Role, user_roles
 
 class User(Base, TimestampMixin):
@@ -35,10 +35,10 @@ class User(Base, TimestampMixin):
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
     customer_id: Mapped[UUID | None] = mapped_column(
-    PGUUID(as_uuid=True),
-    ForeignKey("customers.id", ondelete="SET NULL"),
-    nullable=True,
-    index=True,
+        PGUUID(as_uuid=True),
+        ForeignKey("customers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     status: Mapped[UserStatus] = mapped_column(
         pg_enum(UserStatus, "user_status"),
@@ -61,6 +61,15 @@ class User(Base, TimestampMixin):
     mfa_secret_encrypted: Mapped[str | None] = mapped_column(
         String(512), nullable=True
     )  # preenchido no Bloco 3 (MFA/TOTP)
+
+    # ✅ NOVO (isolamento de chat por setor — Opção A):
+    # - NULL  → atendente vê TODAS as salas do tenant (admin/geral).
+    # - setor → atendente vê APENAS salas do seu setor.
+    # Só faz sentido para usuários de equipe (customer_id IS NULL).
+    chat_sector: Mapped[ChatSector | None] = mapped_column(
+        pg_enum(ChatSector, "chat_sector"),
+        nullable=True,
+    )
 
     roles: Mapped[list[Role]] = relationship(
         secondary=user_roles,

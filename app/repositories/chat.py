@@ -4,10 +4,9 @@
 - Mensagens persistentes no PostgreSQL (fonte da verdade).
 - TODAS as queries filtram por tenant_id (isolamento, seção 5).
 
-✅ CORREÇÃO: get_or_create_room reutiliza APENAS uma sala ABERTA.
-Se a sala existente estiver FECHADA (ou não existir), cria uma NOVA
-sala — permitindo que o cliente inicie um novo atendimento após o
-encerramento do anterior (com o setor escolhido na abertura).
+✅ ISOLAMENTO POR SETOR (Opção A):
+- list_rooms_by_tenant(user): se o atendente tiver chat_sector definido,
+  retorna APENAS salas do seu setor. Sem setor (admin/geral) → vê todas.
 """
 from datetime import datetime, timezone
 from uuid import UUID
@@ -37,7 +36,6 @@ class ChatRepository:
         aberta (ou se a anterior estiver fechada), cria uma NOVA sala
         no setor informado.
         """
-        # 1) Procura uma sala ABERTA existente
         result = await self.db.execute(
             select(ChatRoom)
             .where(
@@ -52,7 +50,6 @@ class ChatRepository:
         if room:
             return room
 
-        # 2) Sem sala aberta → cria uma NOVA (com o setor escolhido)
         room = ChatRoom(
             tenant_id=self._tenant(),
             customer_id=customer_id,
@@ -92,17 +89,17 @@ class ChatRepository:
         )
         return list(result.scalars().all())
 
-    async def list_rooms_by_tenant(self) -> list[ChatRoom]:
-        """Atendentes: todas as salas do tenant.
+    async def list_rooms_by_tenant(self, user: User | None = None) -> list[ChatRoom]:
+        """Atendentes: salas do tenant.
 
-        (Isolamento por SETOR, se desejado, entra como evolução futura —
-        hoje o atendente vê todas as salas do tenant.)
+        ✅ ISOLAMENTO POR SETOR: se o atendente tiver `chat_sector` definido,
+        retorna APENAS salas do seu setor. Sem setor (admin/geral) → todas.
         """
-        result = await self.db.execute(
-            select(ChatRoom)
-            .where(ChatRoom.tenant_id == self._tenant())
-            .order_by(ChatRoom.created_at.desc())
-        )
+        stmt = select(ChatRoom).where(ChatRoom.tenant_id == self._tenant())
+        if user is not None and user.chat_sector is not None:
+            stmt = stmt.where(ChatRoom.sector == user.chat_sector)
+        stmt = stmt.order_by(ChatRoom.created_at.desc())
+        result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
     # ---------- Mensagens ----------

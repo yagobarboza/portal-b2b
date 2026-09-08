@@ -3,6 +3,11 @@
 - Envio de mensagem: valida acesso, persiste no PostgreSQL e publica no
   Redis Pub/Sub (comunicação entre instâncias, seção 24).
 - Redis NÃO é armazenamento permanente — a fonte da verdade é o PostgreSQL.
+
+✅ ISOLAMENTO POR SETOR (Opção A):
+- get_chat_room_for_user: além do tenant, um atendente com `chat_sector`
+  definido só pode acessar salas do SEU setor (REST e WebSocket).
+  Sem setor (admin/geral) → acessa qualquer sala do tenant.
 """
 import json
 from uuid import UUID
@@ -26,6 +31,7 @@ async def get_chat_room_for_user(
     Tenant (via repositório) + propriedade/permissão:
     - Cliente: só a própria sala (customer_id).
     - Atendente (usuário do tenant sem customer_id): salas do tenant.
+    - ✅ Atendente com chat_sector definido: só salas do SEU setor.
     """
     repo = ChatRepository(db)
     room = await repo.get_room(room_id)
@@ -38,6 +44,9 @@ async def get_chat_room_for_user(
             raise ForbiddenError("Acesso negado.")
     else:
         if not user.tenant_id or room.tenant_id != user.tenant_id:
+            raise ForbiddenError("Acesso negado.")
+        # ✅ ISOLAMENTO POR SETOR: atendente com setor só acessa o seu setor.
+        if user.chat_sector is not None and room.sector != user.chat_sector:
             raise ForbiddenError("Acesso negado.")
     return room
 

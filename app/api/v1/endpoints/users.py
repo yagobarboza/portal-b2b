@@ -1,11 +1,16 @@
 """Endpoints de Usuários/Equipe do tenant (gestão).
 
 - GET    /users           -> listar EQUIPE do tenant (users:read) — sem clientes
-- PATCH  /users/{id}      -> editar nome/telefone/status/roles (users:update)
+- PATCH  /users/{id}      -> editar nome/telefone/status/roles/setor (users:update)
 - DELETE /users/{id}      -> desativar usuário (users:delete)
 - CRIAÇÃO de usuário: SEMPRE via POST /invitations (fluxo de convite),
 que restringe a role ao tenant e envia e-mail com link de aceite.
 - Isolamento por tenant em todas as operações.
+
+✅ SEGURANÇA (chat_sector):
+- Só pode ser definido para usuários de EQUIPE (customer_id IS NULL).
+  Clientes NUNCA recebem setor de atendimento.
+- Valor validado pelo enum ChatSector (Pydantic) — setor inválido → 422.
 """
 from uuid import UUID
 
@@ -18,7 +23,7 @@ from app.core.exceptions import NotFoundError, ValidationError
 from app.core.permissions import USER_DELETE, USER_READ, USER_UPDATE
 from app.database.session import get_db
 from app.models import User
-from app.models.enums import UserStatus
+from app.models.enums import ChatSector, UserStatus
 from app.models.rbac import Role, user_roles
 from app.repositories.user import UserRepository
 from app.schemas.user import UserPage, UserRead, UserUpdate
@@ -60,6 +65,7 @@ async def list_users(
                 id=u.id, email=u.email, full_name=u.full_name,
                 phone=u.phone, status=u.status.value,
                 roles=[r.slug for r in u.roles],
+                chat_sector=u.chat_sector,
             )
             for u in items
         ],
@@ -73,7 +79,7 @@ async def update_user(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission(USER_UPDATE)),
 ) -> UserRead:
-    """Edita usuário do tenant (nome, telefone, status, roles)."""
+    """Edita usuário do tenant (nome, telefone, status, roles, setor de chat)."""
     if not _is_agent(user):
         raise NotFoundError("Página não encontrada.")
     repo = UserRepository(db)
@@ -88,6 +94,13 @@ async def update_user(
             raise ValidationError("Você não pode desativar a si mesmo.")
 
     data = body.model_dump(exclude_unset=True)
+
+    # ✅ SEGURANÇA: chat_sector só para usuários de EQUIPE (não cliente).
+    if "chat_sector" in data and target.customer_id is not None:
+        raise ValidationError(
+            "Não é possível definir setor de atendimento para um perfil de cliente."
+        )
+
     if "role_slugs" in data:
         # Substitui as roles apenas por roles válidas do tenant
         roles = []
@@ -105,6 +118,7 @@ async def update_user(
     if "status" in data:
         target.status = UserStatus(data["status"])
         data.pop("status")
+    # ✅ chat_sector é aplicado via repo.update (valor já validado pelo enum).
     await repo.update(target, data)
     await record_audit(
         db, action="update", entity="user",
@@ -115,6 +129,7 @@ async def update_user(
         id=target.id, email=target.email, full_name=target.full_name,
         phone=target.phone, status=target.status.value,
         roles=[r.slug for r in target.roles],
+        chat_sector=target.chat_sector,
     )
 
 @router.delete("/{user_id}", status_code=204)

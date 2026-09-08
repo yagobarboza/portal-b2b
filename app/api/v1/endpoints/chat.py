@@ -4,9 +4,9 @@
 - WebSocket: /ws/{room_id}?token=... com validação de token/tenant/sala/
   permissão (seção 25) e Redis Pub/Sub para broadcast entre instâncias.
 
-✅ CORREÇÃO: POST /chat/rooms agora aceita o body opcional {"sector": ...}.
-Se a sala anterior estiver FECHADA, o repositório cria uma NOVA sala no
-setor escolhido — permitindo o cliente iniciar um novo atendimento.
+✅ ISOLAMENTO POR SETOR (Opção A):
+- list_rooms: filtra por chat_sector do atendente (repositório).
+- WebSocket: atendente com chat_sector só ingressa em sala do SEU setor.
 """
 import asyncio
 import json
@@ -42,11 +42,12 @@ async def list_rooms(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> list[ChatRoomRead]:
-    """Cliente: suas salas. Atendente: salas do tenant (seção 23)."""
+    """Cliente: suas salas. Atendente: salas do tenant (filtradas por setor)."""
     repo = ChatRepository(db)
     if user.customer_id:
         return await repo.list_rooms_by_customer(user.customer_id)
-    return await repo.list_rooms_by_tenant()
+    # ✅ Passa o user para o repositório filtrar por chat_sector.
+    return await repo.list_rooms_by_tenant(user)
 
 @router.post("/rooms", response_model=ChatRoomRead, status_code=201)
 async def get_or_create_room(
@@ -54,12 +55,7 @@ async def get_or_create_room(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> ChatRoomRead:
-    """Cliente: cria (ou obtém a sala ABERTA) no setor escolhido (seção 23).
-
-    - Se houver uma sala ABERTA, reutiliza (mantém o setor dela).
-    - Se a anterior estiver FECHADA (ou não existir), cria uma NOVA sala
-      no setor informado pelo cliente (default: sales).
-    """
+    """Cliente: cria (ou obtém a sala ABERTA) no setor escolhido (seção 23)."""
     if not user.customer_id:
         raise ForbiddenError("Acesso negado.")
     sector = body.sector if body else ChatSector.SALES
@@ -159,14 +155,12 @@ async def upload_attachment(
     """Upload de anexo de chat: validação (Bloco 6) -> R2 -> metadados -> mensagem."""
     room = await get_chat_room_for_user(db, user, room_id)
 
-    # 1) Validação do arquivo (tamanho/extensão/MIME/conteúdo)
     content = await file.read()
     ext, mime_type, size = validate_upload(
         filename=file.filename or "",
         content=content,
         owner_type=FileOwnerType.CHAT,
     )
-    # 2) Upload para o R2 — chave = UUID, nunca nome do usuário
     storage = StorageService()
     storage_key = storage.upload_bytes(
         tenant_id=user.tenant_id,
@@ -175,7 +169,6 @@ async def upload_attachment(
         ext=ext,
         content_type=mime_type,
     )
-    # 3) Metadados no PostgreSQL
     file_repo = FileRepository(db)
     file_row = await file_repo.create(
         tenant_id=user.tenant_id,
@@ -188,20 +181,19 @@ async def upload_attachment(
         uploaded_by_user_id=user.id,
         is_private=False,
     )
-    # 4) Mensagem com o anexo
     msg = await send_chat_message(db, room, user, "📎 Anexo", file_row.id)
     return msg
 
 # ---------- WebSocket (seção 25) ----------
 @router.websocket("/ws/{room_id}")
 async def chat_websocket(websocket: WebSocket, room_id: UUID):
-    """Chat em tempo real: token -> tenant -> sala -> permissão.
+    """Chat em tempo real: token -> tenant -> sala -> permissão (e setor).
 
     Autenticação aceita DUAS formas:
     - `?token=` na query string (apps mobile / clientes HTTP puros);
     - cookie HttpOnly `access_token` (navegador via proxy Vite, mesma origem).
 
-    Um usuário de um tenant NUNCA ingressa em sala de outro tenant.
+    ✅ Um atendente com chat_sector NUNCA ingressa em sala de outro setor.
     """
     token = websocket.query_params.get("token", "") or websocket.cookies.get("access_token", "")
     if not token:
@@ -220,7 +212,6 @@ async def chat_websocket(websocket: WebSocket, room_id: UUID):
             await websocket.close(code=4401, reason="Não autenticado")
             return
 
-        # Isolamento por tenant (seção 5)
         from app.core.context import TenantContext
         TenantContext.set(
             tenant_id=user.tenant_id,
@@ -241,6 +232,15 @@ async def chat_websocket(websocket: WebSocket, room_id: UUID):
             or (user.customer_id is None and room.tenant_id == user.tenant_id)
         )
         if not allowed:
+            await websocket.close(code=4403, reason="Acesso negado")
+            return
+
+        # ✅ ISOLAMENTO POR SETOR no WebSocket (não contornável pela listagem)
+        if (
+            user.customer_id is None
+            and user.chat_sector is not None
+            and room.sector != user.chat_sector
+        ):
             await websocket.close(code=4403, reason="Acesso negado")
             return
 
@@ -280,7 +280,6 @@ async def chat_websocket(websocket: WebSocket, room_id: UUID):
                 msg = await send_chat_message(
                     db, room, user, content, attachment_file_id
                 )
-                # Broadcast via Redis Pub/Sub (todos os conectados recebem)
                 await publish_chat_message(room.id, msg)
         except WebSocketDisconnect:
             pass
