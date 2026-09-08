@@ -5,6 +5,7 @@
   permissão (seção 25) e Redis Pub/Sub para broadcast entre instâncias.
 """
 import asyncio
+import json
 from uuid import UUID
 
 from fastapi import (APIRouter, Depends, File, UploadFile, WebSocket,
@@ -148,11 +149,7 @@ async def upload_attachment(
 # ---------- WebSocket (seção 25) ----------
 @router.websocket("/ws/{room_id}")
 async def chat_websocket(websocket: WebSocket, room_id: UUID):
-    """Chat em tempo real: token -> tenant -> sala -> permissão.
-
-    Um usuário de um tenant NUNCA ingressa em sala de outro tenant (seção 25).
-    """
-    token = websocket.query_params.get("token", "")
+    token = websocket.query_params.get("token", "") or websocket.cookies.get("access_token", "")
     if not token:
         await websocket.close(code=4401, reason="Não autenticado")
         return
@@ -186,8 +183,8 @@ async def chat_websocket(websocket: WebSocket, room_id: UUID):
         # Validação de permissão (seção 25)
         allowed = (
             user.is_super_admin
-            or (user.customer_id and room.customer_id == user.customer_id)
-            or (user.tenant_id and not user.customer_id and room.tenant_id == user.tenant_id)
+            or (user.customer_id is not None and room.customer_id == user.customer_id)
+            or (user.customer_id is None and room.tenant_id == user.tenant_id)
         )
         if not allowed:
             await websocket.close(code=4403, reason="Acesso negado")
@@ -202,14 +199,26 @@ async def chat_websocket(websocket: WebSocket, room_id: UUID):
             try:
                 async for message in pubsub.listen():
                     if message.get("type") == "message":
-                        await websocket.send_text(message["data"])
+                        try:
+                            raw = json.loads(message.get("data") or "{}")
+                        except Exception:
+                            continue
+                        if raw.get("room_id") == str(room_id):
+                            await websocket.send_text(json.dumps(raw))
             except Exception:
                 pass
 
         listener = asyncio.create_task(_listen_redis())
+
         try:
             while True:
-                raw = await websocket.receive_json()
+                raw_text = await websocket.receive_text()
+                try:
+                    raw = json.loads(raw_text)
+                except Exception:
+                    continue
+                if raw.get("type") == "ping":
+                    continue
                 content = (raw.get("content") or "").strip()
                 if not content:
                     continue
