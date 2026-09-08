@@ -6,6 +6,7 @@ URLs permanentes (não expiram):
 - Fallback: Signed URL (expira em R2_SIGNED_URL_EXPIRY) caso a base pública
   não esteja definida — nada quebra se a config não estiver pronta.
 """
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, File as FastAPIFile, UploadFile
@@ -24,6 +25,8 @@ from app.services.audit import record_audit
 from app.services.file_validation import validate_upload
 from app.services.storage import StorageService
 
+logger = logging.getLogger("files")
+
 router = APIRouter(prefix="/files", tags=["Arquivos"])
 
 settings = get_settings()
@@ -39,6 +42,11 @@ def _file_url(storage_key: str) -> tuple[str, int]:
     if base:
         return f"{base}/{storage_key.lstrip('/')}", 0
 
+    logger.warning(
+        "R2_PUBLIC_BASE_URL não configurado — usando URL assinada "
+        "(expira em %ss). Para URLs permanentes, configure o .env.",
+        settings.R2_SIGNED_URL_EXPIRY,
+    )
     storage = StorageService()
     return storage.generate_signed_url(storage_key), settings.R2_SIGNED_URL_EXPIRY
 
