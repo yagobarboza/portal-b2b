@@ -1,5 +1,6 @@
 """Endpoints de Clientes (CRUD manual + importação em massa).
 - GET/POST /customers          -> listar/criar clientes do tenant
+- GET /customers/by-document   -> resolver cliente por CPF/CNPJ (B4.2)
 - GET/PATCH/DELETE /customers/{id} -> detalhe/editar/desativar
 - POST /customers/import       -> importação em massa (CSV/Excel)
 - Isolamento por tenant + RBAC (customers:read/create/update)
@@ -10,7 +11,7 @@ import csv
 import io
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, require_permission
@@ -115,6 +116,26 @@ async def create_customer(
         entity_id=customer.id, user_id=user.id, tenant_id=user.tenant_id,
     )
     await db.commit()
+    return customer
+
+# ===== Resolução por CPF/CNPJ (B4.2) — ANTES de /{customer_id} =====
+@router.get("/by-document", response_model=CustomerRead)
+async def get_customer_by_document(
+    document: str = Query(..., min_length=1, max_length=20),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission(CUSTOMER_READ)),
+) -> CustomerRead:
+    """Resolve um cliente pelo CPF/CNPJ do tenant (ignora pontuação).
+
+    Usa CustomerRepository.get_by_document (normaliza sem caracteres não
+    numéricos e filtra por tenant). Bloqueia acesso de clientes (portal).
+    """
+    if not _is_agent(user):
+        raise NotFoundError("Página não encontrada.")
+    repo = CustomerRepository(db)
+    customer = await repo.get_by_document(document)
+    if not customer:
+        raise NotFoundError("Cliente não encontrado para o documento informado.")
     return customer
 
 @router.get("/{customer_id}", response_model=CustomerRead)

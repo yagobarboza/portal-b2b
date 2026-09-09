@@ -59,6 +59,12 @@ class ProductRead(ProductBase):
     created_at: datetime
     image_url: str | None = None  # Signed URL da imagem principal (R2) — resolvida pelo backend
 
+    # Preço calculado para o cliente (seção 17) — preenchido quando a listagem
+    # é feita para um cliente (vitrine). Fica null nas demais listagens.
+    customer_price: Decimal | None = None
+    final_price: Decimal | None = None
+    price_source: str | None = None  # "customer" | "price_list" | "default"
+
 # ---------- Paginação ----------
 class ProductListParams(BaseModel):
     """Parâmetros de busca, filtro e ordenação de produtos.
@@ -128,3 +134,41 @@ class PriceQuote(BaseModel):
     customer_price: Decimal | None = None
     final_price: Decimal
     price_source: str  # "customer" | "price_list" | "default"
+
+# ---------- Preços por cliente (gestão completa - Bloco A) ----------
+class CustomerPriceUpdate(BaseModel):
+    """Atualização do valor do preço especial (sem trocar cliente/produto)."""
+    price: Decimal = Field(..., gt=0)  # preço deve ser positivo
+
+class CustomerPriceDetailRead(BaseModel):
+    """Preço especial enriquecido com nomes (cliente e produto) para a tela."""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    customer_id: UUID
+    customer_name: str | None = None
+    product_id: UUID
+    product_name: str | None = None
+    product_sku: str | None = None
+    price: Decimal
+
+class CustomerPricePage(BaseModel):
+    """Resposta paginada de preços especiais (padrão do schema de dados)."""
+    items: list[CustomerPriceDetailRead]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+# ---------- Importação em massa de preços especiais (Bloco B3) ----------
+class CustomerPriceImportResult(BaseModel):
+    """Relatório da importação em massa de preços especiais.
+
+    - created: quantos preços foram criados.
+    - updated: quantos preços existentes foram atualizados (par duplicado).
+    - skipped: linhas ignoradas.
+    - errors: detalhe de cada linha com problema (row, error).
+    """
+    created: int
+    updated: int
+    skipped: int
+    errors: list[dict]

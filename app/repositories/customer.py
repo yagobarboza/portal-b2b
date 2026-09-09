@@ -1,7 +1,10 @@
 """Repositório de Clientes (CRUD + importação)."""
+import re
 from uuid import UUID
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.context import TenantContext
 from app.models import Customer
 from app.models.enums import CustomerStatus
@@ -40,6 +43,23 @@ class CustomerRepository:
             select(Customer).where(
                 Customer.email == email,
                 Customer.tenant_id == self._tenant(),
+            )
+        )
+        return result.scalars().first()
+
+    async def get_by_document(self, document: str) -> Customer | None:
+        """Busca cliente pelo documento (CPF/CNPJ) ignorando pontuação.
+
+        Normaliza sem caracteres não numéricos em ambos os lados e filtra
+        SEMPRE por tenant_id (isolamento, seção 5).
+        """
+        digits = re.sub(r"\D", "", document or "")
+        if not digits:
+            return None
+        result = await self.db.execute(
+            select(Customer).where(
+                Customer.tenant_id == self._tenant(),
+                func.regexp_replace(Customer.document, r"\D", "", "g") == digits,
             )
         )
         return result.scalars().first()
