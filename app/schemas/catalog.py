@@ -1,9 +1,22 @@
 """Schemas do catálogo (seções 16 e 17 do doc)."""
+import re
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# ---------- Validação anti-XSS (descrição é conteúdo rico permitido, nunca scripts) ----------
+_XSS_PATTERNS = (r"<\s*script", r"\bon\w+\s*=", r"javascript\s*:")
+
+def _reject_xss(v: str | None) -> str | None:
+    """Rejeita descrições com padrões XSS óbvios (defesa em profundidade)."""
+    if v is None:
+        return v
+    lower = v.lower()
+    if any(re.search(p, lower) for p in _XSS_PATTERNS):
+        raise ValueError("Descrição contém conteúdo não permitido.")
+    return v
 
 # ---------- Category ----------
 class CategoryBase(BaseModel):
@@ -38,6 +51,11 @@ class ProductBase(BaseModel):
     price: Decimal = Field(..., ge=0)  # preço padrão (seção 17)
     stock: Decimal | None = Field(None, ge=0)
 
+    @field_validator("description")
+    @classmethod
+    def _validate_description(cls, v: str | None) -> str | None:
+        return _reject_xss(v)
+
 class ProductCreate(ProductBase):
     pass
 
@@ -51,6 +69,11 @@ class ProductUpdate(BaseModel):
     unit: str | None = Field(None, max_length=20)
     price: Decimal | None = Field(None, ge=0)
     stock: Decimal | None = Field(None, ge=0)
+
+    @field_validator("description")
+    @classmethod
+    def _validate_description(cls, v: str | None) -> str | None:
+        return _reject_xss(v)
 
 class ProductRead(ProductBase):
     model_config = ConfigDict(from_attributes=True)

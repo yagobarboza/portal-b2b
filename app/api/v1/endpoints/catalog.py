@@ -5,6 +5,7 @@
 - Tabelas de preço e preço por cliente (seção 17).
 - Cotação de preço: o backend recalcula o preço final (nunca confia no frontend).
 - Importação em massa de preços especiais (CSV/Excel) — Bloco B3.
+- Página de produto: GET /products/{id} enriquece com o preço do cliente (Vitrine).
 - Isolamento por tenant em todas as queries (seção 5).
 - RBAC: require_permission (seção 13).
 """
@@ -122,7 +123,13 @@ async def create_category(
     user: User = Depends(require_permission(CATALOG_MANAGE)),
 ) -> CategoryRead:
     repo = CategoryRepository(db)
-    category = await repo.create(body.model_dump())
+    try:
+        category = await repo.create(body.model_dump())
+    except IntegrityError:
+        await db.rollback()
+        raise ValidationFailedError(
+            "Já existe uma categoria com este nome/slug."
+        )
     await record_audit(
         db, action="create", entity="category",
         entity_id=category.id, user_id=user.id, tenant_id=user.tenant_id,
@@ -278,18 +285,46 @@ async def get_product_by_sku(
 @router.get("/products/{product_id}", response_model=ProductRead)
 async def get_product(
     product_id: UUID,
+    customer_id: UUID | None = None,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> ProductRead:
+    """Detalhe de um produto (página de produto da vitrine).
+
+    Enriquece com o preço calculado para o cliente (mesmo padrão da listagem)
+    para que a página carregue tudo em 1 request. O backend força o
+    customer_id do próprio cliente (anti-vazamento).
+    """
     repo = ProductRepository(db)
     product = await repo.get(product_id)
     if not product:
         raise NotFoundError("Produto não encontrado.")
 
     image_urls = await attach_product_images(db, [product])
-    return ProductRead.model_validate(product).model_copy(
+    base = ProductRead.model_validate(product).model_copy(
         update={"image_url": image_urls.get(product.id)}
     )
+
+    # Preço calculado para o cliente (1 query em batch)
+    effective_customer = _resolve_quote_customer(user, customer_id)
+    if effective_customer is not None:
+        price_map = await CustomerPriceRepository(db).get_many_for_customer(
+            effective_customer, [product.id]
+        )
+        cp = price_map.get(product.id)
+        if cp is not None:
+            base = base.model_copy(
+                update={
+                    "customer_price": cp,
+                    "final_price": cp,
+                    "price_source": "customer",
+                }
+            )
+        else:
+            base = base.model_copy(
+                update={"final_price": product.price, "price_source": "default"}
+            )
+    return base
 
 @router.patch("/products/{product_id}", response_model=ProductRead)
 async def update_product(
