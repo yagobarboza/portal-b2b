@@ -1,14 +1,16 @@
 """Endpoints de tickets (Bloco 9 — seção 26 + fluxo 61).
-
 - Cliente: cria ticket, acompanha, interage (mensagens públicas), anexos.
 - Empresa/atendente: lista tickets do tenant, muda status (com histórico),
   atribui responsável, responde (pública ou interna).
 - Isolamento por tenant + propriedade em todas as rotas.
 - Hooks de notificação (Bloco 12): nova mensagem e mudança de status
+- assignee_name: o backend entrega o NOME do responsável (1 query em batch),
+  o frontend nunca mais precisa adivinhar o nome a partir do UUID.
 """
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -39,9 +41,23 @@ router = APIRouter(prefix="/tickets", tags=["Tickets"])
 def _is_agent(user: User) -> bool:
     return user.is_super_admin or user.customer_id is None
 
+async def _assignee_names(db: AsyncSession, tickets) -> dict[UUID, str]:
+    """Mapeia assignee_id -> nome do usuário (1 query em batch, sem N+1)."""
+    ids = {t.assignee_id for t in tickets if t.assignee_id}
+    if not ids:
+        return {}
+    result = await db.execute(select(User).where(User.id.in_(ids)))
+    return {u.id: (u.full_name or u.email) for u in result.scalars().all()}
+
+async def _ticket_read(db: AsyncSession, ticket) -> TicketRead:
+    """Serializa um ticket com assignee_name resolvido."""
+    names = await _assignee_names(db, [ticket])
+    return TicketRead.model_validate(ticket).model_copy(
+        update={"assignee_name": names.get(ticket.assignee_id)}
+    )
+
 def _ensure_can_respond(ticket, user: User) -> None:
     """✅ Ticket resolvido/fechado: o cliente NÃO pode mais responder.
-
     A empresa (atendente) continua podendo responder mesmo após o
     fechamento, se necessário (ex.: reabrir conclusão).
     """
@@ -55,7 +71,6 @@ def _ensure_can_respond(ticket, user: User) -> None:
 
 async def _get_ticket_for_user(db: AsyncSession, user: User, ticket_id: UUID):
     """Valida tenant + propriedade/permissão.
-
     Mensagem genérica: quem não tem acesso recebe 404 (anti-vazamento).
     """
     repo = TicketRepository(db)
@@ -90,7 +105,7 @@ async def create_ticket(
         entity_id=ticket.id, user_id=user.id, tenant_id=user.tenant_id,
     )
     await db.commit()
-    return ticket
+    return await _ticket_read(db, ticket)
 
 @router.get("", response_model=TicketPage)
 async def list_tickets(
@@ -105,7 +120,16 @@ async def list_tickets(
         items, total = await repo.list_by_customer(user.customer_id, page, page_size)
     else:
         items, total = await repo.list_by_tenant(page, page_size)
-    return TicketPage(items=items, total=total, page=page, page_size=page_size)
+
+    # Nomes dos responsáveis em 1 query (sem N+1)
+    names = await _assignee_names(db, items)
+    items_out = [
+        TicketRead.model_validate(t).model_copy(
+            update={"assignee_name": names.get(t.assignee_id)}
+        )
+        for t in items
+    ]
+    return TicketPage(items=items_out, total=total, page=page, page_size=page_size)
 
 @router.get("/{ticket_id}", response_model=TicketDetailRead)
 async def get_ticket(
@@ -118,7 +142,11 @@ async def get_ticket(
     include_internal = _is_agent(user)
     messages = await repo.list_messages(ticket.id, include_internal)
     history = await repo.list_history(ticket.id)
+
+    # ✅ Nome do responsável resolvido e injetado no payload
+    names = await _assignee_names(db, [ticket])
     data = TicketRead.model_validate(ticket).model_dump()
+    data["assignee_name"] = names.get(ticket.assignee_id)
     return TicketDetailRead(
         **data,
         messages=[TicketMessageRead.model_validate(m) for m in messages],
@@ -200,7 +228,8 @@ async def update_status(
     )
     await db.commit()
     # Re-busca após commit (evita MissingGreenlet na serialização)
-    return await repo.get(ticket.id)
+    refreshed = await repo.get(ticket.id)
+    return await _ticket_read(db, refreshed)
 
 @router.post("/{ticket_id}/assign", response_model=TicketRead)
 async def assign_ticket(
@@ -217,7 +246,8 @@ async def assign_ticket(
     await repo.assign(ticket, body.assignee_id)
     await db.commit()
     # Re-busca após commit (evita MissingGreenlet na serialização)
-    return await repo.get(ticket.id)
+    refreshed = await repo.get(ticket.id)
+    return await _ticket_read(db, refreshed)
 
 @router.post("/{ticket_id}/attachments", response_model=TicketMessageRead, status_code=201)
 async def upload_attachment(
@@ -230,7 +260,6 @@ async def upload_attachment(
     ticket = await _get_ticket_for_user(db, user, ticket_id)
     # ✅ Bloqueio também para anexos em ticket encerrado
     _ensure_can_respond(ticket, user)
-
     content = await file.read()
     ext, mime_type, size = validate_upload(
         filename=file.filename or "",

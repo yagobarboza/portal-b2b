@@ -3,6 +3,10 @@
 - Número sequencial por tenant.
 - CRUD de tickets, mensagens, histórico de status e atribuição.
 - TODAS as queries filtram por tenant_id (isolamento, seção 5).
+
+Nota: o NOME do responsável (assignee_name) é resolvido no endpoint
+com 1 query em batch de User — o repositório entrega o UUID (assignee_id)
+e a camada de API enriquece a resposta.
 """
 from uuid import UUID
 

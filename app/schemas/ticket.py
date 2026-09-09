@@ -53,6 +53,7 @@ class TicketRead(BaseModel):
     status: TicketStatus
     customer_id: UUID | None
     assignee_id: UUID | None
+    assignee_name: str | None = None  # ✅ nome do responsável (enriquecido pelo backend)
     created_at: datetime
     updated_at: datetime
 
