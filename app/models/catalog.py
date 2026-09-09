@@ -8,6 +8,7 @@ from sqlalchemy import (
     Column,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Table,
@@ -94,9 +95,8 @@ class Product(Base, TenantMixin, TimestampMixin, SoftDeleteMixin):
     price: Mapped[Decimal] = mapped_column(
         Numeric(14, 2), nullable=False, default=Decimal("0.00")
     )
-    stock: Mapped[Decimal | None] = mapped_column(
-        Numeric(14, 3), nullable=True
-    )  # sincronizado via ERP
+    # ✅ Estoque é SEMPRE inteiro (unidades) — nunca 15.000. Sincronizado via ERP.
+    stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[ProductStatus] = mapped_column(
         pg_enum(ProductStatus, "product_status"),
         nullable=False,

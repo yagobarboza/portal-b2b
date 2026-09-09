@@ -74,11 +74,18 @@ async def add_item(
     if _is_agent(user):
         raise NotFoundError("Página não encontrada.")
     customer_id = _get_customer(user)
-    product, price, _ = await validate_cart_item(
-        db, body.product_id, body.quantity, customer_id
-    )
+
     repo = CartRepository(db)
     cart = await repo.get_or_create_open_cart(customer_id)
+    # Quantidade já existente do MESMO produto no carrinho (o repositório soma
+    # as quantidades). Passamos como current_quantity para a validação de estoque
+    # nunca permitir que o total ultrapasse o disponível.
+    existing = await repo.get_item_by_product(cart.id, body.product_id)
+    current_qty = existing.quantity if existing else Decimal("0")
+
+    product, price, _ = await validate_cart_item(
+        db, body.product_id, body.quantity, customer_id, current_qty
+    )
     item = await repo.add_item(cart, product.id, body.quantity, price)
     await db.commit()
     return item
@@ -98,6 +105,8 @@ async def update_quantity(
     item = await repo.get_item(item_id)
     if not item or item.cart_id != cart.id:
         raise NotFoundError("Item não encontrado.")
+    # update_quantity envia a quantidade FINAL (absoluta): o current_quantity
+    # fica 0 e o validate_cart_item barra qualquer valor acima do estoque.
     _, price, _ = await validate_cart_item(
         db, item.product_id, body.quantity, customer_id
     )

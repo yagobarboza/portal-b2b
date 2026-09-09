@@ -6,16 +6,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class CartItemAdd(BaseModel):
     product_id: UUID
-    quantity: Decimal = Field(gt=0)
+    # ✅ Quantidade é SEMPRE INTEIRA (unidades) — nunca "2.000".
+    quantity: int = Field(gt=0)
 
 class CartItemUpdate(BaseModel):
-    quantity: Decimal = Field(gt=0)
+    # ✅ Quantidade inteira (rejeita 2.5 / 2.0001 com 422).
+    quantity: int = Field(gt=0)
 
 class CartItemRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     product_id: UUID
-    quantity: Decimal
+    quantity: int  # ✅ API devolve 2, nunca "2.000"
     unit_price: Decimal
     subtotal: Decimal
 

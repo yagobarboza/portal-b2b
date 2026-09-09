@@ -1,5 +1,6 @@
 """Repositórios do catálogo (seção 38: Router → Schema → Service → Repository → DB).
 TODAS as queries filtram por tenant_id (isolamento obrigatório, seção 5).
+
 Bloco 14 — Cache Redis (seção 53):
 - Leitura de catálogo (produtos/categorias) é dado de baixa volatilidade.
 - Cache com TTL curto (60s) + invalidação em escrita (create/update).
@@ -8,6 +9,8 @@ Bloco 14 — Cache Redis (seção 53):
 - v2: serialização COMPLETA dos modelos (Category/Product) para que a
   reconstrução a partir do cache nunca produza modelos incompletos
   (bug que fazia categorias sumirem após refresh).
+- v3: stock passou a ser INTEIRO (Integer) — serialização/deserialização
+  agora usam int; chaves v2 antigas (stock como Decimal/float) são ignoradas.
 """
 import json
 from datetime import datetime
@@ -30,11 +33,10 @@ CATALOG_CACHE_TTL = int(getattr(settings, "CATALOG_CACHE_TTL", 60))
 
 def _cache_key(tenant_id: UUID, kind: str, suffix: str = "") -> str:
     """Chave de cache sempre escopada por tenant (isolamento).
-
-    Versionada (v2) — garante que chaves antigas com dados parciais
-    (ex.: categoria só com {id, name}) sejam ignoradas após o deploy.
+    Versionada (v3) — garante que chaves antigas com formato diferente
+    (ex.: stock Decimal/float na v2) sejam ignoradas após o deploy.
     """
-    return f"catalog:v2:{tenant_id}:{kind}:{suffix}"
+    return f"catalog:v3:{tenant_id}:{kind}:{suffix}"
 
 def _serialize_category(c: Category) -> dict:
     """Serializa TODOS os campos da categoria (reconstrução fiel no cache)."""
@@ -77,7 +79,8 @@ def _serialize_product(p: Product) -> dict:
         "category_id": str(p.category_id) if p.category_id else None,
         "unit": getattr(p, "unit", None),
         "price": float(p.price) if p.price is not None else None,
-        "stock": float(p.stock) if p.stock is not None else None,
+        # ✅ Estoque INTEIRO (JSON sem casas decimais: 15, nunca 15.0/15.000)
+        "stock": int(p.stock) if p.stock is not None else None,
         "status": p.status.value if hasattr(p.status, "value") else p.status,
         "created_at": p.created_at.isoformat() if getattr(p, "created_at", None) else None,
         "updated_at": p.updated_at.isoformat() if getattr(p, "updated_at", None) else None,
@@ -96,7 +99,8 @@ def _deserialize_product(data: dict) -> Product:
     p.category_id = UUID(data["category_id"]) if data.get("category_id") else None
     p.unit = data.get("unit")
     p.price = Decimal(str(data["price"])) if data.get("price") is not None else None
-    p.stock = Decimal(str(data["stock"])) if data.get("stock") is not None else None
+    # ✅ Estoque INTEIRO (coluna Integer do modelo)
+    p.stock = int(data["stock"]) if data.get("stock") is not None else None
     p.status = data["status"]
     p.created_at = (
         datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
@@ -122,7 +126,7 @@ async def _set_cached(key: str, value: list, ttl: int = CATALOG_CACHE_TTL) -> No
 async def _invalidate(tenant_id: UUID, kind: str) -> None:
     """Invalida o cache de um tipo para o tenant (escrita)."""
     try:
-        pattern = f"catalog:v2:{tenant_id}:{kind}:*"
+        pattern = f"catalog:v3:{tenant_id}:{kind}:*"
         keys = [k async for k in _redis.scan_iter(match=pattern)]
         if keys:
             await _redis.delete(*keys)
@@ -159,7 +163,6 @@ class CategoryRepository:
         cached = await _get_cached(key)
         if cached is not None:
             return [_deserialize_category(c) for c in cached]
-
         result = await self.db.execute(
             select(Category).where(Category.tenant_id == tenant)
         )
@@ -192,7 +195,6 @@ class ProductRepository:
 
     async def get_by_sku(self, sku: str) -> Product | None:
         """Busca produto pelo SKU exato (case-insensitive) do tenant.
-
         Usa a unicidade uq_products_tenant_sku (seção 16) + filtro de tenant.
         """
         sku = (sku or "").strip()
@@ -213,7 +215,6 @@ class ProductRepository:
         cached = await _get_cached(key)
         if cached is not None:
             return [_deserialize_product(c) for c in cached]
-
         result = await self.db.execute(
             select(Product).where(
                 Product.tenant_id == tenant,
@@ -368,7 +369,6 @@ class CustomerPriceRepository:
         page_size: int = 20,
     ) -> tuple[list[CustomerPrice], int]:
         """Lista preços especiais do tenant com filtros + ordenação + paginação.
-
         - Filtra SEMPRE por tenant_id (isolamento multi-tenant).
         - search: busca por nome do cliente, nome do produto ou SKU (ILIKE).
         - min_price / max_price: faixa do preço especial.
@@ -407,8 +407,8 @@ class CustomerPriceRepository:
             stmt = base.order_by(CustomerPrice.price.desc())
         else:
             stmt = base.order_by(CustomerPrice.created_at.desc())
-        stmt = stmt.offset((page - 1) * page_size).limit(page_size)
 
+        stmt = stmt.offset((page - 1) * page_size).limit(page_size)
         result = await self.db.execute(stmt)
         return list(result.scalars().all()), total
 

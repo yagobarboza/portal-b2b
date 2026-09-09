@@ -20,10 +20,15 @@ async def validate_cart_item(
     product_id: UUID,
     quantity: Decimal,
     customer_id: UUID | None,
+    current_quantity: Decimal = Decimal("0"),
 ) -> tuple[Product, Decimal, str]:
     """Valida produto + quantidade + recalcula preço no backend.
 
     Retorna (product, preco_final, fonte_do_preco).
+
+    - current_quantity: quantidade JÁ existente no carrinho para o MESMO
+      produto (usada no add_item, onde as quantidades são somadas). Assim
+      o total nunca estoura o estoque mesmo adicionando em múltiplas vezes.
     """
     # 1. Produto existe, é do tenant e está ativo
     repo = ProductRepository(db)
@@ -36,6 +41,16 @@ async def validate_cart_item(
     # 2. Quantidade válida
     if quantity <= 0:
         raise ValidationError("Quantidade deve ser maior que zero.")
+
+    # 2b. Estoque disponível (seção 21) — nunca permite quantidade acima do estoque.
+    # total = o que já está no carrinho + o que está sendo adicionado.
+    current = current_quantity if current_quantity and current_quantity > 0 else Decimal("0")
+    total_quantity = current + quantity
+    if product.stock is not None and total_quantity > product.stock:
+        raise ValidationError(
+            f"Estoque insuficiente para '{product.name}'. "
+            f"Disponível: {product.stock}."
+        )
 
     # 3. Preço recalculado no backend (nunca confia no frontend — seção 21)
     price, source = await calculate_product_price(db, product, customer_id)

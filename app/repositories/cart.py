@@ -65,6 +65,18 @@ class CartRepository:
         )
         return result.scalars().first()
 
+    async def get_item_by_product(
+        self, cart_id: UUID, product_id: UUID
+    ) -> CartItem | None:
+        """Item do carrinho para um produto específico (validação de estoque)."""
+        result = await self.db.execute(
+            select(CartItem).where(
+                CartItem.cart_id == cart_id,
+                CartItem.product_id == product_id,
+            )
+        )
+        return result.scalars().first()
+
     async def add_item(
         self,
         cart: Cart,

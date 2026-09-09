@@ -49,7 +49,8 @@ class ProductBase(BaseModel):
     category_id: UUID | None = None
     unit: str | None = Field(None, max_length=20)
     price: Decimal = Field(..., ge=0)  # preço padrão (seção 17)
-    stock: Decimal | None = Field(None, ge=0)
+    # ✅ Estoque é SEMPRE inteiro (unidades) — a API devolve 15, nunca "15.000".
+    stock: int | None = Field(None, ge=0)
 
     @field_validator("description")
     @classmethod
@@ -68,7 +69,8 @@ class ProductUpdate(BaseModel):
     category_id: UUID | None = None
     unit: str | None = Field(None, max_length=20)
     price: Decimal | None = Field(None, ge=0)
-    stock: Decimal | None = Field(None, ge=0)
+    # ✅ Estoque inteiro (validação: rejeita 15.5 com 422 — só aceita 15)
+    stock: int | None = Field(None, ge=0)
 
     @field_validator("description")
     @classmethod
