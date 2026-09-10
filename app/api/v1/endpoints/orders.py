@@ -1,4 +1,5 @@
 """Endpoints de Pedidos (checkout + aprovação/gestão do tenant).
+
 - POST /orders                    -> checkout (cliente) — orders:create
 - GET /orders                     -> listar pedidos do cliente (orders:read)
 - GET /orders/tenant              -> listar pedidos de todos os clientes (tenant)
@@ -6,9 +7,12 @@
 - PATCH /orders/{id}/status       -> aprovar/rejeitar (tenant) — orders:manage
 - Isolamento por tenant + propriedade + RBAC
 """
+from datetime import datetime
 from uuid import UUID
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.deps import get_current_user, require_permission
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
 from app.core.permissions import ORDER_CREATE, ORDER_MANAGE, ORDER_READ
@@ -69,16 +73,29 @@ async def checkout(
 @router.get("/tenant", response_model=OrderPage)
 async def list_tenant_orders(
     status: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
     page: int = 1,
     page_size: int = 20,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission(ORDER_MANAGE)),
 ) -> OrderPage:
-    """Tenant: lista pedidos de TODOS os clientes (para aprovação)."""
+    """Tenant: lista pedidos de TODOS os clientes (para aprovação).
+
+    Filtros opcionais:
+      - status: status exato do pedido.
+      - date_from / date_to: intervalo pela data de CRIAÇÃO (ISO 8601 UTC).
+        Ex.: ?date_from=2026-09-10T03:00:00Z&date_to=2026-09-11T02:59:59Z
+        devolve os pedidos do dia 10/09 no fuso de São Paulo.
+      - Quando omitidos, mantém o comportamento anterior (todos os pedidos),
+        preservando a retrocompatibilidade.
+    """
     if not _is_agent(user):
         raise NotFoundError("Página não encontrada.")
     repo = OrderRepository(db)
-    items, total = await repo.list_by_tenant(status, page, page_size)
+    items, total = await repo.list_by_tenant(
+        status, date_from, date_to, page, page_size
+    )
     pages = (total + page_size - 1) // page_size
     return OrderPage(
         items=items, total=total, page=page, page_size=page_size, pages=pages

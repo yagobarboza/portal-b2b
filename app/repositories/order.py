@@ -1,8 +1,11 @@
 """Repositório de pedidos (checkout + aprovação/gestão do tenant)."""
+from datetime import datetime
 from uuid import UUID
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
 from app.core.context import TenantContext
 from app.models import Cart, Order, OrderItem, OrderStatusHistory
 from app.models.enums import CartStatus, OrderStatus
@@ -81,13 +84,26 @@ class OrderRepository:
     async def list_by_tenant(
         self,
         status: str | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[list[Order], int]:
-        """Lista pedidos de TODOS os clientes do tenant (para aprovação)."""
+        """Lista pedidos de TODOS os clientes do tenant (para aprovação).
+
+        Filtros opcionais:
+          - status: status exato do pedido.
+          - date_from / date_to: intervalo de criação (ISO 8601 UTC).
+            Ex.: '2026-09-10T03:00:00Z' a '2026-09-11T02:59:59Z' devolve os
+            pedidos do dia 10/09 no fuso de São Paulo.
+        """
         base = select(Order).where(Order.tenant_id == self._tenant())
         if status:
             base = base.where(Order.status == status)
+        if date_from is not None:
+            base = base.where(Order.created_at >= date_from)
+        if date_to is not None:
+            base = base.where(Order.created_at <= date_to)
         return await self._paginate(base, page, page_size)
 
     async def _paginate(self, base, page: int, page_size: int):

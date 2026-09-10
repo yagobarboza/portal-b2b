@@ -1,9 +1,11 @@
 """Repositório de carrinho (cliente + visão do tenant)."""
 from decimal import Decimal
 from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
 from app.core.context import TenantContext
 from app.models import Cart, CartItem
 from app.models.enums import CartStatus
@@ -41,6 +43,14 @@ class CartRepository:
         cart = await self.get_open_cart(customer_id)
         if not cart:
             cart = await self.create_cart(customer_id)
+            # 🔒 Recarrega COM `items` carregado — evita lazy-load fora do
+            # contexto async (MissingGreenlet → 500 no GET /cart na 1ª abertura).
+            result = await self.db.execute(
+                select(Cart)
+                .options(selectinload(Cart.items))
+                .where(Cart.id == cart.id)
+            )
+            cart = result.scalars().first()
         return cart
 
     async def list_carts_by_tenant(self) -> list[Cart]:
