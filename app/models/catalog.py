@@ -103,6 +103,10 @@ class Product(Base, TenantMixin, TimestampMixin, SoftDeleteMixin):
         default=ProductStatus.ACTIVE,
         server_default=ProductStatus.ACTIVE.value,
     )
+    # ✅ URL EXTERNA da imagem (CDN/storage do próprio cliente).
+    # NULL = sem imagem externa → o backend resolve a imagem interna
+    # (tabela files → Cloudflare R2). Quando preenchida, NÃO consome R2.
+    image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     category: Mapped[Category | None] = relationship(lazy="selectin")
 

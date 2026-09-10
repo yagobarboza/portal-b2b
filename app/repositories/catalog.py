@@ -11,6 +11,8 @@ Bloco 14 — Cache Redis (seção 53):
   (bug que fazia categorias sumirem após refresh).
 - v3: stock passou a ser INTEIRO (Integer) — serialização/deserialização
   agora usam int; chaves v2 antigas (stock como Decimal/float) são ignoradas.
+- v4: image_url (URL externa da imagem) incluída na serialização — produtos
+  com imagem em CDN externo mantêm a URL mesmo vindo do cache.
 """
 import json
 from datetime import datetime
@@ -33,10 +35,11 @@ CATALOG_CACHE_TTL = int(getattr(settings, "CATALOG_CACHE_TTL", 60))
 
 def _cache_key(tenant_id: UUID, kind: str, suffix: str = "") -> str:
     """Chave de cache sempre escopada por tenant (isolamento).
-    Versionada (v3) — garante que chaves antigas com formato diferente
-    (ex.: stock Decimal/float na v2) sejam ignoradas após o deploy.
+
+    Versionada (v4) — garante que chaves antigas com formato diferente
+    (ex.: sem image_url na v3) sejam ignoradas após o deploy.
     """
-    return f"catalog:v3:{tenant_id}:{kind}:{suffix}"
+    return f"catalog:v4:{tenant_id}:{kind}:{suffix}"
 
 def _serialize_category(c: Category) -> dict:
     """Serializa TODOS os campos da categoria (reconstrução fiel no cache)."""
@@ -53,6 +56,7 @@ def _serialize_category(c: Category) -> dict:
 def _deserialize_category(data: dict) -> Category:
     """Reconstrói um Category COMPLETO a partir do cache."""
     from app.models import Category as C
+
     c = C()
     c.id = UUID(data["id"])
     c.name = data["name"]
@@ -82,6 +86,8 @@ def _serialize_product(p: Product) -> dict:
         # ✅ Estoque INTEIRO (JSON sem casas decimais: 15, nunca 15.0/15.000)
         "stock": int(p.stock) if p.stock is not None else None,
         "status": p.status.value if hasattr(p.status, "value") else p.status,
+        # ✅ URL externa da imagem (CDN do cliente) preservada no cache
+        "image_url": getattr(p, "image_url", None),
         "created_at": p.created_at.isoformat() if getattr(p, "created_at", None) else None,
         "updated_at": p.updated_at.isoformat() if getattr(p, "updated_at", None) else None,
     }
@@ -89,6 +95,7 @@ def _serialize_product(p: Product) -> dict:
 def _deserialize_product(data: dict) -> Product:
     """Reconstrói um Product COMPLETO a partir do cache."""
     from app.models import Product as P
+
     p = P()
     p.id = UUID(data["id"])
     p.name = data["name"]
@@ -102,6 +109,8 @@ def _deserialize_product(data: dict) -> Product:
     # ✅ Estoque INTEIRO (coluna Integer do modelo)
     p.stock = int(data["stock"]) if data.get("stock") is not None else None
     p.status = data["status"]
+    # ✅ URL externa da imagem (reconstruída do cache)
+    p.image_url = data.get("image_url")
     p.created_at = (
         datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
     )
@@ -126,7 +135,7 @@ async def _set_cached(key: str, value: list, ttl: int = CATALOG_CACHE_TTL) -> No
 async def _invalidate(tenant_id: UUID, kind: str) -> None:
     """Invalida o cache de um tipo para o tenant (escrita)."""
     try:
-        pattern = f"catalog:v3:{tenant_id}:{kind}:*"
+        pattern = f"catalog:v4:{tenant_id}:{kind}:*"
         keys = [k async for k in _redis.scan_iter(match=pattern)]
         if keys:
             await _redis.delete(*keys)
@@ -163,6 +172,7 @@ class CategoryRepository:
         cached = await _get_cached(key)
         if cached is not None:
             return [_deserialize_category(c) for c in cached]
+
         result = await self.db.execute(
             select(Category).where(Category.tenant_id == tenant)
         )
@@ -195,6 +205,7 @@ class ProductRepository:
 
     async def get_by_sku(self, sku: str) -> Product | None:
         """Busca produto pelo SKU exato (case-insensitive) do tenant.
+
         Usa a unicidade uq_products_tenant_sku (seção 16) + filtro de tenant.
         """
         sku = (sku or "").strip()
@@ -215,6 +226,7 @@ class ProductRepository:
         cached = await _get_cached(key)
         if cached is not None:
             return [_deserialize_product(c) for c in cached]
+
         result = await self.db.execute(
             select(Product).where(
                 Product.tenant_id == tenant,
@@ -246,6 +258,7 @@ class ProductRepository:
         page_size: int = 20,
     ) -> tuple[list[Product], int]:
         """Busca paginada de produtos com filtros e ordenação (seção 53).
+
         - Filtra SEMPRE por tenant_id (isolamento, seção 5).
         - Ordenação apenas por colunas da whitelist (anti-injeção).
         - SEM cache: busca com filtros é variável demais (o cache fica
@@ -333,6 +346,7 @@ class CustomerPriceRepository:
 
     async def get_for_product(self, customer_id: UUID, product_id: UUID) -> CustomerPrice | None:
         """Busca o preço específico de um cliente para um produto (seção 17).
+
         Filtra por tenant_id (isolamento) e valida que o cliente pertence
         ao mesmo tenant (evita IDOR/BOLA).
         """
@@ -369,6 +383,7 @@ class CustomerPriceRepository:
         page_size: int = 20,
     ) -> tuple[list[CustomerPrice], int]:
         """Lista preços especiais do tenant com filtros + ordenação + paginação.
+
         - Filtra SEMPRE por tenant_id (isolamento multi-tenant).
         - search: busca por nome do cliente, nome do produto ou SKU (ILIKE).
         - min_price / max_price: faixa do preço especial.
@@ -376,6 +391,7 @@ class CustomerPriceRepository:
         """
         tenant = self._tenant()
         base = select(CustomerPrice).where(CustomerPrice.tenant_id == tenant)
+
         if customer_id:
             base = base.where(CustomerPrice.customer_id == customer_id)
         if product_id:
@@ -384,6 +400,7 @@ class CustomerPriceRepository:
             base = base.where(CustomerPrice.price >= min_price)
         if max_price is not None:
             base = base.where(CustomerPrice.price <= max_price)
+
         if search:
             like = f"%{search}%"
             base = (
@@ -429,6 +446,7 @@ class CustomerPriceRepository:
         self, customer_id: UUID, product_ids: list[UUID]
     ) -> dict[UUID, Decimal]:
         """Preços especiais de um cliente para vários produtos (1 query).
+
         Filtra por tenant_id (isolamento) — nunca vaza preços entre empresas.
         """
         if not product_ids:

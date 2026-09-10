@@ -65,6 +65,8 @@ class ProductBase(BaseModel):
     price: Decimal = Field(..., ge=0)  # preço padrão (seção 17)
     # ✅ Estoque é SEMPRE inteiro (unidades) — a API devolve 15, nunca "15.000".
     stock: int | None = Field(None, ge=0)
+    # ✅ URL EXTERNA da imagem (CDN/storage do cliente). Vazio/None = usa R2.
+    image_url: str | None = Field(None, max_length=2048)
 
     @field_validator("description")
     @classmethod
@@ -85,6 +87,8 @@ class ProductUpdate(BaseModel):
     price: Decimal | None = Field(None, ge=0)
     # ✅ Estoque inteiro (validação: rejeita 15.5 com 422 — só aceita 15)
     stock: int | None = Field(None, ge=0)
+    # ✅ URL EXTERNA. Enviar "" (string vazia) LIMPA a imagem externa (→ NULL).
+    image_url: str | None = Field(None, max_length=2048)
 
     @field_validator("description")
     @classmethod
@@ -96,7 +100,12 @@ class ProductRead(ProductBase):
     id: UUID
     status: str
     created_at: datetime
-    image_url: str | None = None  # Signed URL da imagem principal (R2) — resolvida pelo backend
+    # URL FINAL de exibição: externa (coluna) quando houver, senão a pública
+    # do R2 (tabela files) — resolvida pelo backend.
+    image_url: str | None = None
+    # ✅ URL EXTERNA CRUA (valor da coluna, sem fallback para o R2).
+    # Usada pelo formulário de edição para não "pinçar" a URL do R2 no campo.
+    image_url_external: str | None = None
 
     # Preço calculado para o cliente (seção 17) — preenchido quando a listagem
     # é feita para um cliente (vitrine). Fica null nas demais listagens.

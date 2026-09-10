@@ -1,5 +1,4 @@
 """Endpoints do catálogo (seções 16 e 17 do doc).
-
 - Categorias: CRUD (Admin/Vendedor).
 - Produtos: CRUD + busca/filtros/ordenação/paginação (Admin/Vendedor).
 - Tabelas de preço e preço por cliente (seção 17).
@@ -7,6 +6,8 @@
 - Cotação de preço: o backend recalcula o preço final (nunca confia no frontend).
 - Importação em massa de preços especiais (CSV/Excel) — Bloco B3.
 - Página de produto: GET /products/{id} enriquece com o preço do cliente (Vitrine).
+- Imagem do produto: URL EXTERNA (coluna image_url) tem prioridade; na
+  ausência dela, resolve a imagem interna do R2 (tabela files).
 - Isolamento por tenant em todas as queries (seção 5).
 - RBAC: require_permission (seção 13).
 """
@@ -96,6 +97,22 @@ def _resolve_quote_customer(user: User, requested: UUID | None) -> UUID | None:
         return requested
     return None
 
+def _resolve_image_url(
+    product: Product, image_urls: dict[UUID, str | None]
+) -> dict:
+    """Monta o update de imagem do ProductRead.
+
+    Prioridade (Caso 1 — imagem em storage externo):
+      1. coluna products.image_url (URL externa do cliente) — NÃO usa R2;
+      2. senão, a URL pública do R2 (primeiro arquivo em files).
+    `image_url_external` expõe SEMPRE o valor cru da coluna (para o
+    formulário de edição não "pinçar" a URL do R2 no campo).
+    """
+    return {
+        "image_url": product.image_url or image_urls.get(product.id),
+        "image_url_external": product.image_url,
+    }
+
 def _normalize_digits(value: str) -> str:
     """Remove tudo que não for dígito (CPF/CNPJ)."""
     return re.sub(r"\D", "", value or "")
@@ -120,6 +137,7 @@ def _iter_price_rows(filename: str, content: bytes):
     yield from csv.DictReader(io.StringIO(text))
 
 # ---------- Desconto por quantidade (Desconto Progressivo) ----------
+
 def _tier_type(rule) -> str:
     """Extrai o valor do enum como string ("percent" | "fixed")."""
     return (
@@ -237,13 +255,21 @@ async def create_product(
     user: User = Depends(require_permission(CATALOG_MANAGE)),
 ) -> ProductRead:
     repo = ProductRepository(db)
-    product = await repo.create(body.model_dump())
+    payload = body.model_dump()
+    # ✅ Campo vazio ('') vindo do formulário → NULL (sem imagem externa).
+    if payload.get("image_url") == "":
+        payload["image_url"] = None
+    product = await repo.create(payload)
     await record_audit(
         db, action="create", entity="product",
         entity_id=product.id, user_id=user.id, tenant_id=user.tenant_id,
     )
     await db.commit()
-    return product
+    # ✅ Resolve a imagem de exibição (externa > R2).
+    image_urls = await attach_product_images(db, [product])
+    return ProductRead.model_validate(product).model_copy(
+        update=_resolve_image_url(product, image_urls)
+    )
 
 @router.get("/products", response_model=ProductPage)
 async def list_products(
@@ -270,14 +296,17 @@ async def list_products(
         page_size=params.page_size,
     )
     pages = (total + params.page_size - 1) // params.page_size
-    # Resolve a URL da imagem de cada produto em UMA query (R2 signed URL)
+
+    # Resolve a imagem de cada produto em UMA query:
+    # 1º a URL EXTERNA (coluna); senão o 1º arquivo do R2 (tabela files).
     image_urls = await attach_product_images(db, items)
     enriched = [
         ProductRead.model_validate(p).model_copy(
-            update={"image_url": image_urls.get(p.id)}
+            update=_resolve_image_url(p, image_urls)
         )
         for p in items
     ]
+
     # Preços especiais na vitrine (batch — sem N+1)
     effective_customer = _resolve_quote_customer(user, customer_id)
     if effective_customer is not None and items:
@@ -305,6 +334,7 @@ async def list_products(
                 )
     else:
         final_items = enriched
+
     return ProductPage(
         items=final_items,
         total=total,
@@ -327,7 +357,7 @@ async def get_product_by_sku(
         raise NotFoundError("Produto não encontrado para o SKU informado.")
     image_urls = await attach_product_images(db, [product])
     return ProductRead.model_validate(product).model_copy(
-        update={"image_url": image_urls.get(product.id)}
+        update=_resolve_image_url(product, image_urls)
     )
 
 @router.get("/products/{product_id}", response_model=ProductRead)
@@ -348,10 +378,12 @@ async def get_product(
     product = await repo.get(product_id)
     if not product:
         raise NotFoundError("Produto não encontrado.")
+
     image_urls = await attach_product_images(db, [product])
     base = ProductRead.model_validate(product).model_copy(
-        update={"image_url": image_urls.get(product.id)}
+        update=_resolve_image_url(product, image_urls)
     )
+
     # Preço calculado para o cliente (1 query em batch)
     effective_customer = _resolve_quote_customer(user, customer_id)
     if effective_customer is not None:
@@ -371,10 +403,12 @@ async def get_product(
             base = base.model_copy(
                 update={"final_price": product.price, "price_source": "default"}
             )
+
     # ✅ Faixas de desconto por quantidade (exibição na vitrine)
     tiers = await _build_tiers(db, product.id, effective_customer)
     if tiers:
         base = base.model_copy(update={"quantity_discounts": tiers})
+
     return base
 
 @router.patch("/products/{product_id}", response_model=ProductRead)
@@ -388,15 +422,26 @@ async def update_product(
     product = await repo.get(product_id)
     if not product:
         raise NotFoundError("Produto não encontrado.")
-    data = {k: v for k, v in body.model_dump().items() if v is not None}
+
+    raw = body.model_dump()
+    data = {k: v for k, v in raw.items() if v is not None}
+    # ✅ '' (campo esvaziado no formulário) LIMPA a imagem externa (→ NULL).
+    if raw.get("image_url") == "":
+        data["image_url"] = None
     for key, value in data.items():
         setattr(product, key, value)
+
     await record_audit(
         db, action="update", entity="product",
         entity_id=product.id, user_id=user.id, tenant_id=user.tenant_id,
     )
     await db.commit()
-    return product
+
+    # ✅ Resolve a imagem de exibição (externa > R2).
+    image_urls = await attach_product_images(db, [product])
+    return ProductRead.model_validate(product).model_copy(
+        update=_resolve_image_url(product, image_urls)
+    )
 
 # ---------- Tabelas de preço (seção 17) ----------
 @router.post("/price-lists", response_model=PriceListRead, status_code=201)
@@ -474,6 +519,7 @@ async def list_customer_prices(
         page=page,
         page_size=page_size,
     )
+
     # Enriquecimento com nomes (batches — sem N+1)
     product_ids = {cp.product_id for cp in items}
     customer_ids = {cp.customer_id for cp in items}
@@ -489,6 +535,7 @@ async def list_customer_prices(
             select(Customer).where(Customer.id.in_(customer_ids))
         )).scalars().all():
             customers[c.id] = c
+
     items_out = [
         CustomerPriceDetailRead(
             id=cp.id,
@@ -557,20 +604,24 @@ async def import_customer_prices(
       - document: CPF/CNPJ do cliente (identificação estável).
       - sku: SKU do produto.
       - price: preço especial (aceita vírgula decimal).
+
     Par cliente+produto já existente → atualiza o preço (substitui valor).
     """
     content = await file.read()
     if len(content) > IMPORT_MAX_BYTES:
         raise ValidationFailedError("Arquivo excede o limite de 2 MB.")
+
     product_repo = ProductRepository(db)
     customer_repo = CustomerRepository(db)
     price_repo = CustomerPriceRepository(db)
+
     created = 0
     updated = 0
     skipped = 0
     errors: list[dict] = []
     # Evita duplicar par (cliente, produto) repetido no MESMO arquivo
     resolved: dict[tuple[UUID, UUID], CustomerPrice | None] = {}
+
     try:
         for row in _iter_price_rows(file.filename or "", content):
             document = _normalize_digits(row.get("document") or "")
@@ -580,20 +631,24 @@ async def import_customer_prices(
                 price = Decimal(price_text)
             except Exception:  # noqa: BLE001
                 price = Decimal("0")
+
             if price <= 0:
                 skipped += 1
                 errors.append({"row": row, "error": "Preço deve ser um número maior que zero."})
                 continue
+
             customer = await customer_repo.get_by_document(document) if document else None
             if customer is None:
                 skipped += 1
                 errors.append({"row": row, "error": "Cliente não encontrado para o documento informado."})
                 continue
+
             product = await product_repo.get_by_sku(sku) if sku else None
             if product is None:
                 skipped += 1
                 errors.append({"row": row, "error": "Produto não encontrado para o SKU informado."})
                 continue
+
             key = (customer.id, product.id)
             if key in resolved:
                 # Repetido no próprio arquivo → também atualiza o preço
@@ -601,6 +656,7 @@ async def import_customer_prices(
             else:
                 existing = await price_repo.get_for_product(customer.id, product.id)
                 resolved[key] = existing
+
             if existing is not None:
                 await price_repo.update(existing, {"price": price})
                 updated += 1
@@ -610,10 +666,12 @@ async def import_customer_prices(
                 )
                 resolved[key] = new_cp
                 created += 1
+
         await db.commit()
     except Exception as exc:  # noqa: BLE001
         await db.rollback()
         raise ValidationFailedError(f"Falha ao processar o arquivo: {exc}")
+
     await record_audit(
         db, action="import", entity="customer_price",
         user_id=user.id, tenant_id=user.tenant_id,
