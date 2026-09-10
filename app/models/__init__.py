@@ -26,6 +26,7 @@ from app.models.order import Order, OrderItem, OrderStatusHistory
 from app.models.rbac import Permission, Role, role_permissions, user_roles
 from app.models.ticket import Ticket, TicketMessage, TicketStatusHistory
 from app.models.user import User
+from app.models.discount import QuantityDiscount
 
 __all__ = [
     "AuditLog",
@@ -61,4 +62,5 @@ __all__ = [
     "catalog_products",
     "role_permissions",
     "user_roles",
+    "QuantityDiscount",
 ]

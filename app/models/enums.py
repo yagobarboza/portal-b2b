@@ -94,6 +94,15 @@ class NotificationType(str, enum.Enum):
     FINANCIAL = "financial"
     SYSTEM = "system"
 
+class DiscountType(str, enum.Enum):
+    """Tipo de desconto por quantidade (Desconto Progressivo).
+
+    - PERCENT: desconto percentual sobre o preço (ex.: 10 = 10% off).
+    - FIXED:   desconto em R$ por unidade (ex.: 2.50 = R$ 2,50 off por un).
+    """
+    PERCENT = "percent"
+    FIXED = "fixed"
+
 def pg_enum(enum_cls: type[enum.Enum], name: str):
     """Enum do PostgreSQL usando os VALORES dos membros (minúsculos).
 

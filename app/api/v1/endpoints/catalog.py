@@ -3,6 +3,7 @@
 - Categorias: CRUD (Admin/Vendedor).
 - Produtos: CRUD + busca/filtros/ordenação/paginação (Admin/Vendedor).
 - Tabelas de preço e preço por cliente (seção 17).
+- Desconto por quantidade (Desconto Progressivo): exposto na vitrine.
 - Cotação de preço: o backend recalcula o preço final (nunca confia no frontend).
 - Importação em massa de preços especiais (CSV/Excel) — Bloco B3.
 - Página de produto: GET /products/{id} enriquece com o preço do cliente (Vitrine).
@@ -26,6 +27,7 @@ from app.core.exceptions import NotFoundError, ValidationFailedError
 from app.core.permissions import CATALOG_MANAGE
 from app.database.session import get_db
 from app.models import Customer, CustomerPrice, Product, User
+from app.models.enums import DiscountType
 from app.repositories.catalog import (
     CategoryRepository,
     CustomerPriceRepository,
@@ -33,6 +35,7 @@ from app.repositories.catalog import (
     ProductRepository,
 )
 from app.repositories.customer import CustomerRepository
+from app.repositories.discount import QuantityDiscountRepository
 from app.schemas.catalog import (
     CategoryCreate,
     CategoryRead,
@@ -51,6 +54,7 @@ from app.schemas.catalog import (
     ProductPage,
     ProductRead,
     ProductUpdate,
+    QuantityTierRead,
 )
 from app.services.audit import record_audit
 from app.services.pricing import calculate_product_price
@@ -114,6 +118,53 @@ def _iter_price_rows(filename: str, content: bytes):
         return
     text = content.decode("utf-8-sig")
     yield from csv.DictReader(io.StringIO(text))
+
+# ---------- Desconto por quantidade (Desconto Progressivo) ----------
+def _tier_type(rule) -> str:
+    """Extrai o valor do enum como string ("percent" | "fixed")."""
+    return (
+        rule.discount_type.value
+        if hasattr(rule.discount_type, "value")
+        else rule.discount_type
+    )
+
+def _tier_label(discount_type: str, discount_value: Decimal) -> str:
+    """Rótulo legível da faixa (ex.: '5% off' | 'R$ 2,50 off/un')."""
+    if discount_type == DiscountType.PERCENT.value:
+        return f"{discount_value:g}% off"
+    return f"R$ {discount_value:.2f} off/un".replace(".", ",")
+
+async def _build_tiers(
+    db: AsyncSession, product_id: UUID, customer_id: UUID | None
+) -> list[QuantityTierRead]:
+    """Monta as faixas de desconto por quantidade exibíveis ao cliente.
+
+    Combina as regras GLOBAIS (todos os clientes) com as ESPECÍFICAS do
+    cliente — em caso de mesma faixa, a do cliente prevalece (most specific
+    wins), espelhando a precedência usada no cálculo do preço (2 queries,
+    sem N+1).
+    """
+    repo = QuantityDiscountRepository(db)
+    rules = await repo.list_active_global_for_product(product_id)
+    if customer_id:
+        customer_rules = await repo.list_active_for_customer_product(
+            customer_id, product_id
+        )
+        if customer_rules:
+            # Mesma faixa: a regra específica do cliente SUBSTITUI a global.
+            by_min: dict[int, object] = {r.min_quantity: r for r in rules}
+            for r in customer_rules:
+                by_min[r.min_quantity] = r
+            rules = sorted(by_min.values(), key=lambda r: r.min_quantity)
+    return [
+        QuantityTierRead(
+            min_quantity=r.min_quantity,
+            discount_type=_tier_type(r),
+            discount_value=r.discount_value,
+            label=_tier_label(_tier_type(r), r.discount_value),
+        )
+        for r in rules
+    ]
 
 # ---------- Categorias ----------
 @router.post("/categories", response_model=CategoryRead, status_code=201)
@@ -219,7 +270,6 @@ async def list_products(
         page_size=params.page_size,
     )
     pages = (total + params.page_size - 1) // params.page_size
-
     # Resolve a URL da imagem de cada produto em UMA query (R2 signed URL)
     image_urls = await attach_product_images(db, items)
     enriched = [
@@ -228,7 +278,6 @@ async def list_products(
         )
         for p in items
     ]
-
     # Preços especiais na vitrine (batch — sem N+1)
     effective_customer = _resolve_quote_customer(user, customer_id)
     if effective_customer is not None and items:
@@ -256,7 +305,6 @@ async def list_products(
                 )
     else:
         final_items = enriched
-
     return ProductPage(
         items=final_items,
         total=total,
@@ -292,19 +340,18 @@ async def get_product(
     """Detalhe de um produto (página de produto da vitrine).
 
     Enriquece com o preço calculado para o cliente (mesmo padrão da listagem)
-    para que a página carregue tudo em 1 request. O backend força o
-    customer_id do próprio cliente (anti-vazamento).
+    e com as FAIXAS de desconto por quantidade, para que a página carregue
+    tudo em 1 request. O backend força o customer_id do próprio cliente
+    (anti-vazamento).
     """
     repo = ProductRepository(db)
     product = await repo.get(product_id)
     if not product:
         raise NotFoundError("Produto não encontrado.")
-
     image_urls = await attach_product_images(db, [product])
     base = ProductRead.model_validate(product).model_copy(
         update={"image_url": image_urls.get(product.id)}
     )
-
     # Preço calculado para o cliente (1 query em batch)
     effective_customer = _resolve_quote_customer(user, customer_id)
     if effective_customer is not None:
@@ -324,6 +371,10 @@ async def get_product(
             base = base.model_copy(
                 update={"final_price": product.price, "price_source": "default"}
             )
+    # ✅ Faixas de desconto por quantidade (exibição na vitrine)
+    tiers = await _build_tiers(db, product.id, effective_customer)
+    if tiers:
+        base = base.model_copy(update={"quantity_discounts": tiers})
     return base
 
 @router.patch("/products/{product_id}", response_model=ProductRead)
@@ -423,7 +474,6 @@ async def list_customer_prices(
         page=page,
         page_size=page_size,
     )
-
     # Enriquecimento com nomes (batches — sem N+1)
     product_ids = {cp.product_id for cp in items}
     customer_ids = {cp.customer_id for cp in items}
@@ -439,7 +489,6 @@ async def list_customer_prices(
             select(Customer).where(Customer.id.in_(customer_ids))
         )).scalars().all():
             customers[c.id] = c
-
     items_out = [
         CustomerPriceDetailRead(
             id=cp.id,
@@ -513,18 +562,15 @@ async def import_customer_prices(
     content = await file.read()
     if len(content) > IMPORT_MAX_BYTES:
         raise ValidationFailedError("Arquivo excede o limite de 2 MB.")
-
     product_repo = ProductRepository(db)
     customer_repo = CustomerRepository(db)
     price_repo = CustomerPriceRepository(db)
-
     created = 0
     updated = 0
     skipped = 0
     errors: list[dict] = []
     # Evita duplicar par (cliente, produto) repetido no MESMO arquivo
     resolved: dict[tuple[UUID, UUID], CustomerPrice | None] = {}
-
     try:
         for row in _iter_price_rows(file.filename or "", content):
             document = _normalize_digits(row.get("document") or "")
@@ -538,19 +584,16 @@ async def import_customer_prices(
                 skipped += 1
                 errors.append({"row": row, "error": "Preço deve ser um número maior que zero."})
                 continue
-
             customer = await customer_repo.get_by_document(document) if document else None
             if customer is None:
                 skipped += 1
                 errors.append({"row": row, "error": "Cliente não encontrado para o documento informado."})
                 continue
-
             product = await product_repo.get_by_sku(sku) if sku else None
             if product is None:
                 skipped += 1
                 errors.append({"row": row, "error": "Produto não encontrado para o SKU informado."})
                 continue
-
             key = (customer.id, product.id)
             if key in resolved:
                 # Repetido no próprio arquivo → também atualiza o preço
@@ -558,7 +601,6 @@ async def import_customer_prices(
             else:
                 existing = await price_repo.get_for_product(customer.id, product.id)
                 resolved[key] = existing
-
             if existing is not None:
                 await price_repo.update(existing, {"price": price})
                 updated += 1
@@ -568,12 +610,10 @@ async def import_customer_prices(
                 )
                 resolved[key] = new_cp
                 created += 1
-
         await db.commit()
     except Exception as exc:  # noqa: BLE001
         await db.rollback()
         raise ValidationFailedError(f"Falha ao processar o arquivo: {exc}")
-
     await record_audit(
         db, action="import", entity="customer_price",
         user_id=user.id, tenant_id=user.tenant_id,
@@ -588,6 +628,7 @@ async def import_customer_prices(
 async def quote_product_price(
     product_id: UUID,
     customer_id: UUID | None = None,
+    quantity: int | None = Query(None, ge=1),  # desconto por quantidade
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> PriceQuote:
@@ -595,6 +636,8 @@ async def quote_product_price(
 
     O backend recalcula o preço — nunca confia no frontend.
     Prioridade: preço do cliente > preço padrão do produto.
+    Com `quantity`, aplica o desconto por quantidade (Desconto Progressivo) —
+    `final_price` já sai com o desconto aplicado.
     Cliente do portal: usa SEMPRE o próprio customer_id (anti-vazamento).
     """
     repo = ProductRepository(db)
@@ -602,7 +645,11 @@ async def quote_product_price(
     if not product:
         raise NotFoundError("Produto não encontrado.")
     effective_customer = _resolve_quote_customer(user, customer_id)
-    final_price, source = await calculate_product_price(db, product, effective_customer)
+    final_price, source = await calculate_product_price(
+        db, product, effective_customer, quantity  # ✅ passa quantity
+    )
+    # ✅ Faixas de desconto por quantidade (exibição da tabela no cliente)
+    tiers = await _build_tiers(db, product.id, effective_customer)
     return PriceQuote(
         product_id=product.id,
         sku=product.sku,
@@ -611,4 +658,6 @@ async def quote_product_price(
         customer_price=final_price if source == "customer" else None,
         final_price=final_price,
         price_source=source,
+        quantity=quantity,
+        quantity_discounts=tiers,
     )

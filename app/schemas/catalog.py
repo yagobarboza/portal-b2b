@@ -39,6 +39,20 @@ class CategoryRead(CategoryBase):
     is_active: bool
     created_at: datetime
 
+# ---------- Desconto por quantidade (Desconto Progressivo) ----------
+class QuantityTierRead(BaseModel):
+    """Faixa de desconto por quantidade exibida ao cliente (vitrine).
+
+    - discount_type: "percent" (valor = %) | "fixed" (valor = R$ por unidade).
+    - label: rótulo pronto para exibição (ex.: "5% off" | "R$ 2,50 off/un").
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+    min_quantity: int
+    discount_type: str
+    discount_value: Decimal
+    label: str | None = None
+
 # ---------- Product ----------
 class ProductBase(BaseModel):
     sku: str = Field(..., min_length=1, max_length=80)
@@ -90,6 +104,9 @@ class ProductRead(ProductBase):
     final_price: Decimal | None = None
     price_source: str | None = None  # "customer" | "price_list" | "default"
 
+    # ✅ Faixas de desconto por quantidade (Desconto Progressivo) — exibição na vitrine
+    quantity_discounts: list[QuantityTierRead] = []
+
 # ---------- Paginação ----------
 class ProductListParams(BaseModel):
     """Parâmetros de busca, filtro e ordenação de produtos.
@@ -102,6 +119,7 @@ class ProductListParams(BaseModel):
     - sort_dir: asc/desc.
     - page / page_size: paginação (com limites).
     """
+
     search: str | None = Field(None, max_length=255)
     category_id: UUID | None = None
     status: str | None = Field(None, pattern="^(active|inactive)$")
@@ -114,6 +132,7 @@ class ProductListParams(BaseModel):
 
 class ProductPage(BaseModel):
     """Resposta paginada de produtos."""
+
     items: list[ProductRead]
     total: int
     page: int
@@ -151,7 +170,11 @@ class PriceQuote(BaseModel):
     1. Preço específico do cliente (CustomerPrice)
     2. Preço da tabela (PriceList)
     3. Preço padrão do produto
+
+    E, quando `quantity` é informado, aplica o desconto por quantidade
+    (Desconto Progressivo) — `final_price` já sai com o desconto.
     """
+
     product_id: UUID
     sku: str
     name: str
@@ -160,13 +183,19 @@ class PriceQuote(BaseModel):
     final_price: Decimal
     price_source: str  # "customer" | "price_list" | "default"
 
+    # ✅ Desconto por quantidade (Desconto Progressivo)
+    quantity: int | None = None  # quantidade usada no cálculo (se informada)
+    quantity_discounts: list[QuantityTierRead] = []
+
 # ---------- Preços por cliente (gestão completa - Bloco A) ----------
 class CustomerPriceUpdate(BaseModel):
     """Atualização do valor do preço especial (sem trocar cliente/produto)."""
+
     price: Decimal = Field(..., gt=0)  # preço deve ser positivo
 
 class CustomerPriceDetailRead(BaseModel):
     """Preço especial enriquecido com nomes (cliente e produto) para a tela."""
+
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     customer_id: UUID
@@ -178,6 +207,7 @@ class CustomerPriceDetailRead(BaseModel):
 
 class CustomerPricePage(BaseModel):
     """Resposta paginada de preços especiais (padrão do schema de dados)."""
+
     items: list[CustomerPriceDetailRead]
     total: int
     page: int
@@ -193,6 +223,7 @@ class CustomerPriceImportResult(BaseModel):
     - skipped: linhas ignoradas.
     - errors: detalhe de cada linha com problema (row, error).
     """
+
     created: int
     updated: int
     skipped: int
