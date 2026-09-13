@@ -7,6 +7,9 @@ Arquitetura:
 - Revogação: sessões ativas no Redis; logout/logout-all invalidam.
 - Proteção contra reutilização: se um refresh já rotacionado for
   reutilizado, a sessão inteira é revogada (mitigação de roubo).
+- MFA (seção 11): token de DESAFIO de curta duração (uso único) emitido
+  no login quando o usuário tem 2FA ativo. Só após validar o código é que
+  a sessão (access + refresh) é criada.
 """
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -22,12 +25,21 @@ _redis: aioredis.Redis | None = None
 
 ACCESS_TYPE = "access"
 REFRESH_TYPE = "refresh"
+# ✅ Tipo do token de desafio MFA (2º fator pendente no login).
+MFA_TYPE = "mfa_challenge"
 
 def _get_redis() -> aioredis.Redis:
     global _redis
     if _redis is None:
         _redis = aioredis.from_url(settings.redis_url, decode_responses=True)
     return _redis
+
+def _mfa_challenge_ttl() -> int:
+    """TTL do desafio MFA em segundos (padrão: 5 min)."""
+    return int(getattr(settings, "MFA_CHALLENGE_EXPIRE_SECONDS", 300))
+
+def _mfa_challenge_key(jti: str) -> str:
+    return f"auth:mfa_challenge:{jti}"
 
 # ---------- geração ----------
 
@@ -89,6 +101,55 @@ def create_refresh_token(
         expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
         session_id=session_id,
     )
+
+# ---------- desafio MFA (2º fator no login) ----------
+
+async def create_mfa_challenge_token(
+    *,
+    user_id: UUID,
+    tenant_id: UUID | None,
+    is_super_admin: bool,
+) -> str:
+    """Gera o token de desafio MFA (curta duração, uso único).
+
+    O `jti` é registrado no Redis com TTL curto. A sessão REAL (access +
+    refresh) só é criada depois que o código TOTP for validado.
+    """
+    token, jti = _create_token(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        is_super_admin=is_super_admin,
+        token_type=MFA_TYPE,
+        expires_delta=timedelta(seconds=_mfa_challenge_ttl()),
+    )
+    r = _get_redis()
+    await r.set(_mfa_challenge_key(jti), str(user_id), ex=_mfa_challenge_ttl())
+    return token
+
+async def validate_mfa_challenge(token: str) -> dict:
+    """Valida o desafio MFA SEM consumi-lo (permite nova tentativa do código).
+
+    Proteção: o desafio tem TTL curto e o endpoint de verificação é
+    rate-limited por IP. Só é consumido (revogado) quando o código acerta.
+    Levanta TokenError se inválido, expirado ou não registrado no Redis.
+    """
+    payload = decode_token(token, MFA_TYPE)
+    jti = payload.get("jti")
+    if not jti:
+        raise TokenError("Token inválido.")
+    r = _get_redis()
+    stored = await r.get(_mfa_challenge_key(jti))
+    if stored is None:
+        raise TokenError("Desafio expirado.")
+    return payload
+
+async def revoke_mfa_challenge(payload: dict) -> None:
+    """Consome o desafio MFA (uso único) após o segundo fator ser validado."""
+    jti = payload.get("jti")
+    if not jti:
+        return
+    r = _get_redis()
+    await r.delete(_mfa_challenge_key(jti))
 
 # ---------- decodificação/validação ----------
 

@@ -1,7 +1,7 @@
 ﻿from uuid import UUID
 
 from sqlalchemy import Boolean, ForeignKey, String, text
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin
@@ -61,6 +61,12 @@ class User(Base, TimestampMixin):
     mfa_secret_encrypted: Mapped[str | None] = mapped_column(
         String(512), nullable=True
     )  # preenchido no Bloco 3 (MFA/TOTP)
+
+    # ✅ Códigos de recuperação do MFA (uso único), armazenados como HASH
+    # (SHA-256) — nunca em texto puro. Lista vazia = sem códigos válidos.
+    mfa_recovery_codes_hashed: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
 
     # ✅ NOVO (isolamento de chat por setor — Opção A):
     # - NULL  → atendente vê TODAS as salas do tenant (admin/geral).

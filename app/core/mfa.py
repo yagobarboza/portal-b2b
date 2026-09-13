@@ -2,9 +2,10 @@
 
 - Gera secret TOTP e QR code para o app autenticador.
 - Verifica códigos TOTP.
-- Gera códigos de recuperação (uso único).
+- Gera códigos de recuperação (uso único) e os armazena como HASH.
 """
 import base64
+import hashlib
 import io
 import secrets
 
@@ -43,3 +44,21 @@ def qr_code_data_uri(secret: str, email: str) -> str:
 def generate_recovery_codes(count: int = 8) -> list[str]:
     """Gera códigos de recuperação de uso único (seção 11)."""
     return [secrets.token_hex(4).upper() for _ in range(count)]
+
+# ---------- Códigos de recuperação (armazenados como HASH) ----------
+
+def hash_recovery_code(code: str) -> str:
+    """Hash SHA-256 do código de recuperação (nunca guardar em texto puro).
+
+    Os códigos são aleatórios de alta entropia (token_hex), então SHA-256
+    sem salt é seguro e permite comparação determinística.
+    """
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+def hash_recovery_codes(codes: list[str]) -> list[str]:
+    """Aplica hash em todos os códigos gerados (para armazenar no banco)."""
+    return [hash_recovery_code(c) for c in codes]
+
+def verify_recovery_code(code: str, hashed_codes: list[str]) -> bool:
+    """Verifica se o código informado bate com algum hash armazenado."""
+    return hash_recovery_code(code) in (hashed_codes or [])

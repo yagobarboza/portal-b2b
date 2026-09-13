@@ -32,6 +32,7 @@ class UserInfo(BaseModel):
     roles: list[str] = []          # slugs das roles do usuário
     permissions: list[str] = []    # códigos de permissão efetivos
 
+# ---------- MFA (seção 11) ----------
 class MfaSetupResponse(BaseModel):
     secret: str
     qr_code: str
@@ -40,6 +41,26 @@ class MfaSetupResponse(BaseModel):
 class MfaVerifyRequest(BaseModel):
     secret: str
     code: str
+
+# ✅ Desativação do MFA: exige confirmação com a senha atual OU um código
+# TOTP válido (pelo menos um dos dois deve ser informado e validado).
+class MfaDisableRequest(BaseModel):
+    password: str | None = Field(None, min_length=1)
+    code: str | None = Field(None, min_length=6, max_length=32)
+
+# ✅ Segundo fator no LOGIN: devolvido quando a senha está correta mas o
+# usuário tem MFA ativo. O frontend deve exibir o campo de código e chamar
+# POST /auth/mfa/verify-login com este challenge_token.
+class MfaChallengeResponse(BaseModel):
+    mfa_required: bool = True
+    challenge_token: str
+    email: EmailStr
+
+# ✅ Validação do segundo fator no login (código TOTP do app autenticador
+# OU um código de recuperação).
+class MfaLoginVerifyRequest(BaseModel):
+    challenge_token: str
+    code: str = Field(..., min_length=6, max_length=32)
 
 class PasswordResetRequest(BaseModel):
     email: EmailStr

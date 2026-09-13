@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import NotFoundError
+from app.core.mfa import hash_recovery_code
 from app.models import User
 
 class UserRepository:
@@ -60,6 +61,38 @@ class UserRepository:
     async def set_mfa(self, user: User, secret: str, enabled: bool) -> None:
         user.mfa_secret_encrypted = secret if enabled else None
         user.mfa_enabled = enabled
+        await self.session.flush()
+
+    # ---------- Códigos de recuperação (MFA) ----------
+
+    async def set_mfa_recovery_codes(self, user: User, hashed_codes: list[str]) -> None:
+        """Substitui os códigos de recuperação (já com hash)."""
+        user.mfa_recovery_codes_hashed = hashed_codes
+        await self.session.flush()
+
+    async def get_mfa_recovery_codes(self, user: User) -> list[str]:
+        """Retorna os hashes dos códigos de recuperação."""
+        return user.mfa_recovery_codes_hashed or []
+
+    async def consume_mfa_recovery_code(self, user: User, code: str) -> bool:
+        """Consome um código de recuperação (uso único) e revoga os demais.
+
+        Segurança padrão: se um código de recuperação é usado, TODOS os
+        outros são invalidados (evita reuso e limita a janela de exposição).
+        Retorna True se o código era válido e foi consumido.
+        """
+        codes = list(user.mfa_recovery_codes_hashed or [])
+        target = hash_recovery_code(code)
+        if target not in codes:
+            return False
+        # Revoga todos os códigos restantes (uso único + invalidação total)
+        user.mfa_recovery_codes_hashed = []
+        await self.session.flush()
+        return True
+
+    async def clear_mfa_recovery_codes(self, user: User) -> None:
+        """Limpa todos os códigos de recuperação (ex.: desativar MFA)."""
+        user.mfa_recovery_codes_hashed = []
         await self.session.flush()
 
     async def update_password(self, user: User, password_hash: str) -> None:
