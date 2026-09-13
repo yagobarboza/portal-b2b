@@ -10,6 +10,11 @@ Arquitetura:
 - MFA (seção 11): token de DESAFIO de curta duração (uso único) emitido
   no login quando o usuário tem 2FA ativo. Só após validar o código é que
   a sessão (access + refresh) é criada.
+- Blacklist do access token (logout): o access é um JWT stateless válido
+  por ~30 min. Sem blacklist, ele continua autenticando mesmo após o
+  logout. Ao deslogar, o `jti` do access é gravado no Redis com TTL até
+  expirar; qualquer endpoint que valida o access (ex.: /auth/me) rejeita
+  tokens na blacklist.
 """
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -150,6 +155,34 @@ async def revoke_mfa_challenge(payload: dict) -> None:
         return
     r = _get_redis()
     await r.delete(_mfa_challenge_key(jti))
+
+# ---------- blacklist do access token (logout) ----------
+
+def _access_blacklist_key(jti: str) -> str:
+    return f"auth:access_blacklist:{jti}"
+
+async def blacklist_access_token(payload: dict) -> None:
+    """Marca o access token como revogado (logout).
+
+    O access token é um JWT stateless válido por ~30 min. Sem blacklist,
+    ele continua autenticando mesmo após o logout. Aqui gravamos o `jti`
+    no Redis com TTL = tempo restante de validade do token.
+    """
+    jti = payload.get("jti")
+    if not jti:
+        return
+    exp = payload.get("exp")
+    now = int(datetime.now(timezone.utc).timestamp())
+    ttl = max(1, int(exp) - now) if exp else 300
+    r = _get_redis()
+    await r.set(_access_blacklist_key(jti), "1", ex=ttl)
+
+async def is_access_blacklisted(jti: str) -> bool:
+    """True se o access token foi revogado no logout."""
+    if not jti:
+        return False
+    r = _get_redis()
+    return await r.exists(_access_blacklist_key(jti)) == 1
 
 # ---------- decodificação/validação ----------
 

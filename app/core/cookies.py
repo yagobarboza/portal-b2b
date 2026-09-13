@@ -30,6 +30,18 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
     )
 
 def clear_auth_cookies(response: Response) -> None:
-    """Remove os cookies de autenticação (logout)."""
-    response.delete_cookie(ACCESS_COOKIE, path="/")
-    response.delete_cookie(REFRESH_COOKIE, path="/")
+    """Remove os cookies de autenticação (logout).
+
+    ✅ FIX: o delete_cookie precisa repetir os MESMOS atributos usados no
+    set_cookie (secure, samesite, httponly, path). Sem isso, o navegador
+    não encontra o cookie para apagar e ele PERMANECE — o logout "não faz
+    nada". Agora os dois cookies são apagados de forma confiável.
+    """
+    for key in (ACCESS_COOKIE, REFRESH_COOKIE):
+        response.delete_cookie(
+            key,
+            path="/",
+            secure=settings.COOKIE_SECURE,
+            samesite=settings.COOKIE_SAMESITE,
+            httponly=settings.COOKIE_HTTPONLY,
+        )

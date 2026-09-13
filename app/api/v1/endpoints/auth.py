@@ -5,6 +5,8 @@ Segurança:
 - Mensagens genéricas: nunca revela se o e-mail existe.
 - Access/Refresh tokens com rotação (seção 10).
 - Cookies HttpOnly/Secure/SameSite.
+- Logout: revoga a sessão do refresh, BLACKLISTA o access token e limpa
+  os cookies — impede reautenticação com access token ainda válido.
 - MFA (seção 11): login em DOIS passos quando o 2FA está ativo —
   1) senha correta → devolve desafio (challenge_token), SEM criar sessão;
   2) POST /auth/mfa/verify-login valida o código TOTP (ou recovery code)
@@ -32,10 +34,12 @@ from app.core.login_guard import (
 from app.core.security import verify_password
 from app.core.tokens import (
     TokenError,
+    blacklist_access_token,
     create_access_token,
     create_mfa_challenge_token,
     create_session,
     decode_token,
+    is_access_blacklisted,
     revoke_mfa_challenge,
     validate_mfa_challenge,
     rotate_session,
@@ -330,16 +334,35 @@ async def logout(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
-    """Revoga a sessão e limpa os cookies (seção 10)."""
-    token = request.cookies.get(REFRESH_COOKIE)
+    """Revoga a sessão, blacklista o access token e limpa os cookies.
+
+    ✅ FIX (logout): o access token é um JWT stateless válido por ~30 min.
+    Mesmo apagando os cookies, um access ainda vivo reautenticaria. Aqui
+    também blacklistamos o `jti` do access no Redis — assim qualquer
+    endpoint que valida o access (ex.: /auth/me) retorna 401 após o logout.
+    """
     user_id = None
-    if token:
+
+    # 1) Revoga a sessão do refresh token
+    refresh_token = request.cookies.get(REFRESH_COOKIE)
+    if refresh_token:
         try:
-            payload = decode_token(token, REFRESH_TYPE)
+            payload = decode_token(refresh_token, REFRESH_TYPE)
             await revoke_session(payload["sid"])
             user_id = payload.get("sub")
         except (TokenError, KeyError):
             pass  # sessão já inválida — logout é idempotente
+
+    # 2) ✅ Blacklista o access token (impede reautenticação com token vivo)
+    access_token = request.cookies.get(ACCESS_COOKIE)
+    if access_token:
+        try:
+            access_payload = decode_token(access_token, ACCESS_TYPE)
+            await blacklist_access_token(access_payload)
+        except TokenError:
+            pass
+
+    # 3) Limpa os cookies
     clear_auth_cookies(response)
 
     # Auditoria: logout
@@ -365,6 +388,11 @@ async def me(request: Request, db: AsyncSession = Depends(get_db)) -> UserInfo:
         payload = decode_token(token, ACCESS_TYPE)
     except TokenError:
         raise UnauthorizedError("Não autenticado.")
+
+    # ✅ Blacklist: access token revogado no logout → sessão encerrada.
+    if await is_access_blacklisted(payload.get("jti")):
+        raise UnauthorizedError("Sessão encerrada. Faça login novamente.")
+
     users = UserRepository(db)
     user = await users.get(payload["sub"])
     return UserInfo(
@@ -469,9 +497,10 @@ async def mfa_disable(
     if not user.mfa_enabled:
         raise ForbiddenError("MFA não está ativado.")
 
-    # Confirmação: senha atual OU código TOTP válido
+    # ✅ Blindagem: se não há secret válido, só aceita a senha como confirmação.
+    has_secret = bool(user.mfa_secret_encrypted)
     password_ok = bool(body.password) and verify_password(body.password, user.password_hash)
-    code_ok = bool(body.code) and verify_totp(user.mfa_secret_encrypted or "", body.code)
+    code_ok = has_secret and bool(body.code) and verify_totp(user.mfa_secret_encrypted or "", body.code)
     if not (password_ok or code_ok):
         raise UnauthorizedError("Confirmação inválida. Informe a senha atual ou um código válido.")
 
