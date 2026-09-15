@@ -4,6 +4,8 @@
 - Rate limit + proteção contra replay via Redis (seção 31).
 - Upsert por external_id — idempotência obrigatória (seção 30).
 - Execuções de sync com status/quantidades/erros (seção 33).
+- BLOCO B3: evento `stock.sync` processa ESTOQUE via `apply_stock_sync`
+  (mesmo motor do agente/arquivo — normalização, sem criar produto).
 """
 import hashlib
 import hmac
@@ -19,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.models import FinancialAccount, Product
 from app.models.enums import FinancialAccountStatus, ProductStatus, SyncStatus
+from app.services.stock_sync import apply_stock_sync, parse_stock_records
 
 settings = get_settings()
 redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
@@ -232,7 +235,6 @@ async def run_sync(
                 customer = result.scalars().first()
                 customer_id = customer.id if customer else None
             records = _demo_records(entity, customer_id)
-
         if entity == "financial":
             processed, errors, msg = await upsert_financial_accounts(
                 db, integration.tenant_id, records
@@ -254,7 +256,6 @@ async def run_sync(
 
     sync.finished_at = datetime.now(timezone.utc)
     await db.commit()
-
     result = await db.execute(
         select(SyncExecution).where(SyncExecution.id == sync.id)
     )
@@ -263,7 +264,16 @@ async def run_sync(
 async def process_webhook_payload(
     db: AsyncSession, integration, event, payload: dict
 ) -> dict:
-    """Processa o payload do webhook e atualiza o evento (seção 31)."""
+    """Processa o payload do webhook e atualiza o evento (seção 31).
+
+    Eventos suportados:
+    - financial.sync → títulos financeiros (upsert por external_id).
+    - product.sync   → produtos completos (upsert por sku).
+    - stock.sync     → SOMENTE estoque (Bloco B3 — tipo `webhook`).
+      Reusa o motor de estoque (`apply_stock_sync`): normaliza para inteiro,
+      só atualiza produto existente, registra SyncExecution e aceita
+      registros inválidos sem derrubar o lote.
+    """
     from app.models import WebhookEvent
 
     event_name = payload.get("event", "")
@@ -277,6 +287,19 @@ async def process_webhook_payload(
             processed, errors, msg = await upsert_products(
                 db, integration.tenant_id, records
             )
+        elif event_name == "stock.sync":
+            # ✅ Bloco B3: estoque vindo do ERP do cliente (push por webhook).
+            items, row_errors = parse_stock_records(records)
+            result = await apply_stock_sync(
+                db,
+                integration=integration,
+                items=items,
+                batch_id=None,
+                extra_errors=row_errors,
+            )
+            processed = result["processed"]
+            errors = result["errors"]
+            msg = result["message"]
         else:
             raise ValueError(f"Evento não suportado: {event_name}")
 

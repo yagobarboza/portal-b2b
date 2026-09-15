@@ -5,13 +5,26 @@
 - Webhook usa tenant_id explícito (chamada externa, sem sessão).
 - SyncExecution e WebhookEvent herdam TenantMixin (tenant_id NOT NULL) —
   por isso o tenant_id é SEMPRE preenchido aqui, nunca None.
+
+✅ BLOCO I1 — chave de API do AGENTE de integração:
+- A chave (hash SHA-256) é gravada em `ERPIntegration.config_encrypted`
+  no formato "PREFIXO:HASH" — sem migração e sem segredo em claro.
+- A autenticação do agente busca a integração por IGUALDADE EXATA do
+  registro reconstruído a partir da chave apresentada (sem LIKE).
+
+✅ BLOCO B4 — config do PULL (tipo `api`):
+- A configuração da API do cliente (JSON, com segredos cifrados) também
+  fica em `config_encrypted`. Não conflita com a chave do agente: uma
+  integração tem UM tipo, e o formato "PREFIXO:HASH" nunca é um JSON.
 """
+import json
 from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.api_keys import build_api_key_record, record_prefix
 from app.models import ERPIntegration, SyncExecution, WebhookEvent
 from app.models.enums import WebhookStatus
 
@@ -41,6 +54,16 @@ class IntegrationRepository:
         )
         return list(result.scalars().all())
 
+    async def list_active_by_type(self, type_: str) -> list[ERPIntegration]:
+        """Integrações ativas de um tipo (ex.: 'api') — para o cron de pull."""
+        result = await self.db.execute(
+            select(ERPIntegration).where(
+                ERPIntegration.is_active.is_(True),
+                ERPIntegration.type == type_,
+            )
+        )
+        return list(result.scalars().all())
+
     async def create(
         self, tenant_id: UUID, name: str, type_: str
     ) -> ERPIntegration:
@@ -50,6 +73,55 @@ class IntegrationRepository:
         self.db.add(integration)
         await self.db.flush()
         return integration
+
+    # ---------- Chave de API do agente (Bloco I1) ----------
+    async def set_agent_api_key(self, integration: ERPIntegration, raw_key: str) -> None:
+        """Grava (ou ROTACIONA) a chave do agente: substitui pelo novo hash.
+
+        A chave em claro nunca entra no banco — apenas "PREFIXO:HASH".
+        """
+        integration.config_encrypted = build_api_key_record(raw_key)
+        await self.db.flush()
+
+    async def get_agent_api_key_prefix(self, integration: ERPIntegration) -> str | None:
+        """Prefixo da chave ativa (para exibir na UI) ou None se não houver."""
+        return record_prefix(integration.config_encrypted)
+
+    async def clear_agent_api_key(self, integration: ERPIntegration) -> None:
+        """Revoga a chave do agente (remove o registro)."""
+        integration.config_encrypted = None
+        await self.db.flush()
+
+    async def get_by_agent_api_key(self, raw_key: str) -> ERPIntegration | None:
+        """Resolve a integração dona da chave apresentada pelo agente.
+
+        Busca por igualdade exata do registro "PREFIXO:HASH" — o tenant sai
+        SEMPRE daqui (nunca do payload), garantindo o isolamento multi-tenant.
+        """
+        record = build_api_key_record(raw_key)
+        result = await self.db.execute(
+            select(ERPIntegration).where(
+                ERPIntegration.config_encrypted == record
+            )
+        )
+        return result.scalars().first()
+
+    # ---------- Config do PULL (Bloco B4) ----------
+    async def get_api_config(self, integration: ERPIntegration) -> dict | None:
+        """Lê a config JSON do pull (tipo `api`) ou None se não existir."""
+        raw = integration.config_encrypted
+        if not raw:
+            return None
+        try:
+            cfg = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+        return cfg if isinstance(cfg, dict) else None
+
+    async def set_api_config(self, integration: ERPIntegration, config: dict) -> None:
+        """Grava a config JSON do pull (segredos já cifrados pelo chamador)."""
+        integration.config_encrypted = json.dumps(config)
+        await self.db.flush()
 
     # ---------- Sync executions (seção 33) ----------
     async def create_sync(

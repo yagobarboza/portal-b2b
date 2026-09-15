@@ -2,6 +2,8 @@
 
 - get_current_user: extrai o usuário do access token (cookie ou header).
 - require_permission: verifica a permissão do usuário (RBAC).
+- require_integration_key: autentica o AGENTE de integração por chave de API
+  (integração NÃO nativa — Bloco I1). O tenant vem da chave, nunca do payload.
 - super_admin tem acesso a tudo.
 """
 from fastapi import Depends, Request
@@ -13,7 +15,8 @@ from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.core.permissions import SUPER_ADMIN
 from app.core.tokens import TokenError, decode_token, ACCESS_TYPE
 from app.database.session import get_db
-from app.models import User
+from app.models import ERPIntegration, User
+from app.repositories.integration import IntegrationRepository
 from app.repositories.user import UserRepository
 
 async def get_current_user(
@@ -58,10 +61,51 @@ def _user_permissions(user: User) -> set[str]:
 
 def require_permission(permission: str):
     """Factory de dependency: exige a permissão para acessar o endpoint."""
+
     async def _checker(user: User = Depends(get_current_user)) -> User:
         if user.is_super_admin:
             return user
         if permission not in _user_permissions(user):
             raise ForbiddenError("Acesso negado.")
         return user
+
     return _checker
+
+# ---------- BLOCO I1 — autenticação do AGENTE de integração ----------
+def _extract_api_key(request: Request) -> str | None:
+    """Lê a chave do agente em `X-API-Key` (ou `Authorization: Api-Key <chave>`)."""
+    raw = request.headers.get("x-api-key")
+    if raw and raw.strip():
+        return raw.strip()
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("api-key "):
+        return auth[8:].strip()
+    return None
+
+async def require_integration_key(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> ERPIntegration:
+    """Autentica o agente de integração do cliente via chave de API.
+
+    Substitui a sessão de usuário: o agente não faz login.
+    - Resolve a integração pela chave (hash) — 401 se ausente/ inválida/inativa.
+    - Popula o TenantContext com o tenant DA CHAVE (isolamento multi-tenant):
+      o payload do agente nunca escolhe o tenant.
+    """
+    raw = _extract_api_key(request)
+    if not raw:
+        raise UnauthorizedError("Chave de API ausente.")
+
+    repo = IntegrationRepository(db)
+    integration = await repo.get_by_agent_api_key(raw)
+    if integration is None or not integration.is_active:
+        # Mensagem genérica (não revela se a chave existe ou está inativa).
+        raise UnauthorizedError("Chave de API inválida.")
+
+    TenantContext.set(
+        tenant_id=integration.tenant_id,
+        user_id=None,
+        is_super_admin=False,
+    )
+    return integration
