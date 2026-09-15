@@ -5,6 +5,7 @@ URLs permanentes (não expiram):
   (expires_in=0 → sem expiração).
 - Fallback: Signed URL (expira em R2_SIGNED_URL_EXPIRY) caso a base pública
   não esteja definida — nada quebra se a config não estiver pronta.
+- DELETE /files/{id}: remove o objeto do R2 E o registro de metadados.
 """
 import logging
 import uuid
@@ -120,3 +121,33 @@ async def download_file(
 
     url, expires_in = _file_url(file_obj.storage_key)
     return FileDownloadResponse(url=url, expires_in=expires_in)
+
+@router.delete("/{file_id}", status_code=204)
+async def delete_file(
+    file_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission(FILE_UPLOAD)),
+) -> None:
+    """Remove um arquivo: apaga o objeto do R2 E o registro de metadados.
+
+    - O repositório já filtra por tenant (isolamento) — bloqueia IDOR/cross-tenant.
+    - Ordem segura: apaga o objeto do storage PRIMEIRO; se falhar, não toca no
+      banco (evita registro órfão apontando para um objeto inexistente).
+    - Permissão: FILE_UPLOAD (quem envia também pode excluir; não há FILE_DELETE).
+    """
+    repo = FileRepository(db)
+    file_obj = await repo.get(file_id)
+    if not file_obj:
+        raise NotFoundError("Arquivo não encontrado.")
+
+    # 1) Apaga o objeto do Cloudflare R2 (falha → aborta antes de tocar no banco).
+    StorageService().delete_object(file_obj.storage_key)
+
+    # 2) Remove o registro de metadados (mesmo tenant já validado no get).
+    await repo.delete(file_obj)
+
+    await record_audit(
+        db, action="delete", entity="file",
+        entity_id=file_obj.id, user_id=user.id, tenant_id=user.tenant_id,
+    )
+    await db.commit()

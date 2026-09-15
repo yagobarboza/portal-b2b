@@ -13,9 +13,11 @@ Bloco 14 — Cache Redis (seção 53):
   agora usam int; chaves v2 antigas (stock como Decimal/float) são ignoradas.
 - v4: image_url (URL externa da imagem) incluída na serialização — produtos
   com imagem em CDN externo mantêm a URL mesmo vindo do cache.
+- v5: soft delete — leituras filtram por is_deleted == False; produtos
+  excluídos (is_deleted=True) somem da vitrine e do catálogo.
 """
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -35,7 +37,6 @@ CATALOG_CACHE_TTL = int(getattr(settings, "CATALOG_CACHE_TTL", 60))
 
 def _cache_key(tenant_id: UUID, kind: str, suffix: str = "") -> str:
     """Chave de cache sempre escopada por tenant (isolamento).
-
     Versionada (v4) — garante que chaves antigas com formato diferente
     (ex.: sem image_url na v3) sejam ignoradas após o deploy.
     """
@@ -172,7 +173,6 @@ class CategoryRepository:
         cached = await _get_cached(key)
         if cached is not None:
             return [_deserialize_category(c) for c in cached]
-
         result = await self.db.execute(
             select(Category).where(Category.tenant_id == tenant)
         )
@@ -199,13 +199,13 @@ class ProductRepository:
             select(Product).where(
                 Product.id == product_id,
                 Product.tenant_id == self._tenant(),
+                Product.is_deleted == False,  # noqa: E712 — soft delete
             )
         )
         return result.scalars().first()
 
     async def get_by_sku(self, sku: str) -> Product | None:
         """Busca produto pelo SKU exato (case-insensitive) do tenant.
-
         Usa a unicidade uq_products_tenant_sku (seção 16) + filtro de tenant.
         """
         sku = (sku or "").strip()
@@ -215,6 +215,7 @@ class ProductRepository:
             select(Product).where(
                 Product.tenant_id == self._tenant(),
                 func.lower(Product.sku) == sku.lower(),
+                Product.is_deleted == False,  # noqa: E712 — soft delete
             )
         )
         return result.scalars().first()
@@ -226,11 +227,11 @@ class ProductRepository:
         cached = await _get_cached(key)
         if cached is not None:
             return [_deserialize_product(c) for c in cached]
-
         result = await self.db.execute(
             select(Product).where(
                 Product.tenant_id == tenant,
                 Product.status == "active",
+                Product.is_deleted == False,  # noqa: E712 — soft delete
             )
         )
         items = list(result.scalars().all())
@@ -240,6 +241,17 @@ class ProductRepository:
     async def update(self, product: Product, data: dict) -> Product:
         for key, value in data.items():
             setattr(product, key, value)
+        await self.db.flush()
+        await _invalidate(self._tenant(), "products")  # invalida cache
+        return product
+
+    async def soft_delete(self, product: Product) -> Product:
+        """Exclusão LÓGICA (soft delete): marca is_deleted + deleted_at.
+        Nunca apaga fisicamente dados de negócio (princípio do projeto).
+        Invalida o cache para que o produto suma das listagens.
+        """
+        product.is_deleted = True
+        product.deleted_at = datetime.now(timezone.utc)
         await self.db.flush()
         await _invalidate(self._tenant(), "products")  # invalida cache
         return product
@@ -258,16 +270,18 @@ class ProductRepository:
         page_size: int = 20,
     ) -> tuple[list[Product], int]:
         """Busca paginada de produtos com filtros e ordenação (seção 53).
-
         - Filtra SEMPRE por tenant_id (isolamento, seção 5).
+        - Exclui produtos com soft delete (is_deleted == False).
         - Ordenação apenas por colunas da whitelist (anti-injeção).
         - SEM cache: busca com filtros é variável demais (o cache fica
           para listagens estáveis como list_all).
         - Retorna (itens, total).
         """
         tenant = self._tenant()
-        stmt = select(Product).where(Product.tenant_id == tenant)
-
+        stmt = select(Product).where(
+            Product.tenant_id == tenant,
+            Product.is_deleted == False,  # noqa: E712 — soft delete
+        )
         # Filtros
         if search:
             like = f"%{search}%"
@@ -286,11 +300,9 @@ class ProductRepository:
             stmt = stmt.where(Product.price >= min_price)
         if max_price is not None:
             stmt = stmt.where(Product.price <= max_price)
-
         # Total (para paginação)
         count_stmt = select(func.count()).select_from(stmt.subquery())
         total = (await self.db.execute(count_stmt)).scalar_one()
-
         # Ordenação (whitelist de colunas — anti-injeção, seção 53)
         sort_col = {
             "name": Product.name,
@@ -302,7 +314,6 @@ class ProductRepository:
         stmt = stmt.order_by(
             sort_col.asc() if sort_dir == "asc" else sort_col.desc()
         )
-
         # Paginação
         stmt = stmt.offset((page - 1) * page_size).limit(page_size)
         result = await self.db.execute(stmt)
@@ -346,7 +357,6 @@ class CustomerPriceRepository:
 
     async def get_for_product(self, customer_id: UUID, product_id: UUID) -> CustomerPrice | None:
         """Busca o preço específico de um cliente para um produto (seção 17).
-
         Filtra por tenant_id (isolamento) e valida que o cliente pertence
         ao mesmo tenant (evita IDOR/BOLA).
         """
@@ -383,7 +393,6 @@ class CustomerPriceRepository:
         page_size: int = 20,
     ) -> tuple[list[CustomerPrice], int]:
         """Lista preços especiais do tenant com filtros + ordenação + paginação.
-
         - Filtra SEMPRE por tenant_id (isolamento multi-tenant).
         - search: busca por nome do cliente, nome do produto ou SKU (ILIKE).
         - min_price / max_price: faixa do preço especial.
@@ -391,7 +400,6 @@ class CustomerPriceRepository:
         """
         tenant = self._tenant()
         base = select(CustomerPrice).where(CustomerPrice.tenant_id == tenant)
-
         if customer_id:
             base = base.where(CustomerPrice.customer_id == customer_id)
         if product_id:
@@ -400,7 +408,6 @@ class CustomerPriceRepository:
             base = base.where(CustomerPrice.price >= min_price)
         if max_price is not None:
             base = base.where(CustomerPrice.price <= max_price)
-
         if search:
             like = f"%{search}%"
             base = (
@@ -414,17 +421,14 @@ class CustomerPriceRepository:
                     )
                 )
             )
-
         count_stmt = select(func.count()).select_from(base.subquery())
         total = (await self.db.execute(count_stmt)).scalar_one()
-
         if sort_by == "price_asc":
             stmt = base.order_by(CustomerPrice.price.asc())
         elif sort_by == "price_desc":
             stmt = base.order_by(CustomerPrice.price.desc())
         else:
             stmt = base.order_by(CustomerPrice.created_at.desc())
-
         stmt = stmt.offset((page - 1) * page_size).limit(page_size)
         result = await self.db.execute(stmt)
         return list(result.scalars().all()), total
@@ -446,7 +450,6 @@ class CustomerPriceRepository:
         self, customer_id: UUID, product_ids: list[UUID]
     ) -> dict[UUID, Decimal]:
         """Preços especiais de um cliente para vários produtos (1 query).
-
         Filtra por tenant_id (isolamento) — nunca vaza preços entre empresas.
         """
         if not product_ids:

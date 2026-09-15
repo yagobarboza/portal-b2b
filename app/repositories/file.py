@@ -66,3 +66,12 @@ class FileRepository:
             )
         )
         return list(result.scalars().all())
+
+    async def delete(self, file_obj: File) -> None:
+        """Remove o registro de metadados de um arquivo já validado (mesmo tenant).
+
+        A validação de tenant é feita no `get()` (que filtra por tenant_id);
+        este método apenas efetiva a remoção do registro já carregado.
+        """
+        await self.db.delete(file_obj)
+        await self.db.flush()
