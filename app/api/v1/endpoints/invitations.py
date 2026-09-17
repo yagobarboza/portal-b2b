@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.core.exceptions import ForbiddenError, ValidationFailedError
 from app.core.invitations import compute_expires_at, generate_invite_token
 from app.core.permissions import USER_CREATE, USER_DELETE, USER_READ
+from app.core.queue import enqueue_job
 from app.core.security import hash_password, validate_password_strength
 from app.database.session import get_db
 from app.models.company import Company
@@ -27,14 +28,15 @@ from app.repositories.invitation import InvitationRepository
 from app.repositories.user import UserRepository
 from app.schemas.invitation import InviteAccept, InviteCreate, InviteResponse
 from app.services.audit import record_audit
-from app.core.queue import enqueue_job
 
 router = APIRouter(tags=["invitations"])
+
 
 async def _resolve_role(
     db: AsyncSession, role_slug: str, tenant_id: UUID | None
 ) -> Role | None:
     """Resolve a role pelo slug.
+
     Para convites de usuário do tenant, RESTRINGE ao tenant
     (não permite atribuir roles globais indevidas — evita privilege escalation).
     """
@@ -48,20 +50,25 @@ async def _resolve_role(
     result = await db.execute(stmt)
     return result.scalars().first()
 
+
 async def _company_name(db: AsyncSession, tenant_id: UUID | None) -> str:
+    """Nome da empresa para o e-mail de convite."""
     if tenant_id is None:
         return "Portal B2B"
     company = await db.get(Company, tenant_id)
     return company.name if company else "Portal B2B"
 
+
 async def _build_invite_url(token: str, base_url: str | None = None) -> str:
     """Monta o link do convite.
+
     Usa o domínio customizado da empresa quando existir;
     caso contrário, cai no FRONTEND_BASE_URL global (fallback).
     """
     settings = get_settings()
     base = (base_url or settings.FRONTEND_BASE_URL).rstrip("/")
     return f"{base}/accept-invite?token={token}"
+
 
 @router.post("/invitations", response_model=InviteResponse, status_code=201)
 async def create_invite(
@@ -98,7 +105,12 @@ async def create_invite(
     # Domínio customizado da empresa (se houver) para o link do convite
     company = await db.get(Company, tenant_id) if tenant_id else None
     company_name = company.name if company else "Portal B2B"
-    invite_url = _build_invite_url(token, company.domain if company else None)
+    # ✅ FIX: _build_invite_url é async — precisa de await para obter a
+    #    string da URL. Sem o await, passa-se uma coroutine ao job, que
+    #    não é serializável (pickle) e o e-mail nunca é enviado.
+    invite_url = await _build_invite_url(
+        token, company.domain if company else None
+    )
     await enqueue_job(
         "send_invite_email_job",
         to_email=body.email,
@@ -127,6 +139,7 @@ async def create_invite(
         created_at=invitation.created_at,
     )
 
+
 @router.get("/invitations", response_model=list[InviteResponse])
 async def list_invites(
     db: AsyncSession = Depends(get_db),
@@ -149,6 +162,7 @@ async def list_invites(
         )
         for i in invites
     ]
+
 
 @router.delete("/invitations/{invitation_id}", status_code=204)
 async def cancel_invite(
@@ -174,6 +188,7 @@ async def cancel_invite(
         user_agent=request.headers.get("user-agent"),
     )
     await db.commit()
+
 
 @router.post("/invitations/accept")
 async def accept_invite(
@@ -204,7 +219,7 @@ async def accept_invite(
         password_hash=hash_password(body.password),
         full_name=body.full_name,
         tenant_id=invitation.tenant_id,
-        customer_id=invitation.customer_id,  # NOVO: vincula o perfil CLIENTE
+        customer_id=invitation.customer_id,  # vincula o perfil CLIENTE
         is_super_admin=False,
         status=UserStatus.ACTIVE,
     )
@@ -226,6 +241,7 @@ async def accept_invite(
     )
     await db.commit()
     return {"status": "ok", "message": "Cadastro concluído. Faça login."}
+
 
 def _client_ip(request: Request) -> str:
     """IP do cliente, respeitando proxy reverso (X-Forwarded-For)."""

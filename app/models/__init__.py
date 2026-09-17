@@ -5,6 +5,7 @@ Importar TODOS os modelos aqui é obrigatório:
 """
 
 from app.models.audit import AuditLog
+from app.models.billing import BillingCharge
 from app.models.cart import Cart, CartItem
 from app.models.catalog import (
     Catalog,
@@ -30,6 +31,7 @@ from app.models.discount import QuantityDiscount
 
 __all__ = [
     "AuditLog",
+    "BillingCharge",
     "Cart",
     "CartItem",
     "Catalog",

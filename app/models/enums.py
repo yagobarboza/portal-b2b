@@ -103,6 +103,25 @@ class DiscountType(str, enum.Enum):
     PERCENT = "percent"
     FIXED = "fixed"
 
+class BillingType(str, enum.Enum):
+    """Forma de pagamento da cobrança (espelho do Asaas billingType).
+
+    - PIX: pagamento instantâneo via PIX.
+    - BOLETO: boleto bancário.
+    - CREDIT_CARD: cartão de crédito (sempre via checkout Asaas — PCI).
+    """
+    PIX = "pix"
+    BOLETO = "boleto"
+    CREDIT_CARD = "credit_card"
+
+class BillingStatus(str, enum.Enum):
+    """Status financeiro da cobrança (espelho do Asaas payment status)."""
+    PENDING = "pending"
+    PAID = "paid"
+    OVERDUE = "overdue"
+    CANCELLED = "cancelled"
+    REFUNDED = "refunded"
+
 def pg_enum(enum_cls: type[enum.Enum], name: str):
     """Enum do PostgreSQL usando os VALORES dos membros (minúsculos).
 

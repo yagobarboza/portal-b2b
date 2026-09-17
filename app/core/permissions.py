@@ -2,7 +2,7 @@
 
 Formato: {modulo}:{acao}
 - modulo: companies, users, customers, products, catalogs, cart,
-  orders, tickets, chat, financial, files, notifications, admin
+  orders, tickets, chat, financial, files, notifications, admin, billing
 - acao: read, create, update, delete, manage
 """
 
@@ -62,6 +62,10 @@ NOTIFICATION_READ = "notifications:read"
 # ===== Admin =====
 ADMIN_MANAGE = "admin:manage"
 
+# ===== Billing (cobranças/assinaturas Asaas) =====
+BILLING_READ = "billing:read"      # admin da empresa vê as cobranças dela
+BILLING_MANAGE = "billing:manage"  # superadmin cria/gerencia cobranças
+
 # ===== Super admin (acesso total) =====
 SUPER_ADMIN = "super_admin:all"
 
@@ -97,6 +101,8 @@ PERMISSION_CATALOG: list[dict] = [
     {"code": FILE_READ, "name": "Ver arquivos", "module": "files", "description": "Acessar arquivos"},
     {"code": NOTIFICATION_READ, "name": "Ver notificações", "module": "notifications", "description": "Ler notificações"},
     {"code": ADMIN_MANAGE, "name": "Administração", "module": "admin", "description": "Funções administrativas do tenant"},
+    {"code": BILLING_READ, "name": "Ver cobranças", "module": "billing", "description": "Ver cobranças/assinaturas da empresa"},
+    {"code": BILLING_MANAGE, "name": "Gerenciar cobranças", "module": "billing", "description": "Criar/gerenciar cobranças (Super Admin)"},
     {"code": SUPER_ADMIN, "name": "Super Admin", "module": "admin", "description": "Acesso global à plataforma"},
 ]
 

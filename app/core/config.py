@@ -69,6 +69,20 @@ class Settings(BaseSettings):
     WEBHOOK_RATE_LIMIT: int = 60      # eventos/minuto por integração
     WEBHOOK_IDEMPOTENCY_TTL: int = 86400  # segundos p/ proteção contra replay
 
+    # ===== ASAAS (integração de cobrança/assinatura) =====
+    # Ambiente: "sandbox" | "production" (definido no .env)
+    ASAAS_ENV: str = "sandbox"
+    # Chave de API do Asaas (NUNCA no código — apenas no .env)
+    ASAAS_API_KEY: str = ""
+    # Token de autenticação dos webhooks do Asaas (valida a origem)
+    ASAAS_WEBHOOK_TOKEN: str = ""
+    # User-Agent OBRIGATÓRIO pela API do Asaas (contas criadas após 13/06/2024).
+    # Identifica a aplicação em todas as requisições autenticadas.
+    ASAAS_USER_AGENT: str = "Portal B2B (nydB2B)"
+    # Dias de tolerância após o vencimento da última mensalidade não paga
+    # antes de inativar a empresa (regra aprovada: 30 dias).
+    BILLING_GRACE_DAYS: int = 30
+
     # ===== CLOUDFLARE R2 (Bloco 6, seção 18) =====
     R2_ACCOUNT_ID: str = ""
     R2_ACCESS_KEY_ID: str = ""
@@ -100,8 +114,8 @@ class Settings(BaseSettings):
 
     # ===== Resend (e-mail) e convites =====
     RESEND_API_KEY: str = ""
-    RESEND_FROM_EMAIL: str = "Portal B2B <contato@miragewear.com.br>"
-    FRONTEND_BASE_URL: str = "https://tradebridge-io.lovable.app/"
+    RESEND_FROM_EMAIL: str = "Portal B2B <contato@nydsoftwares.com.br>"
+    FRONTEND_BASE_URL: str = ""
     INVITE_TOKEN_EXPIRE_HOURS: int = 72
     DEFAULT_ADMIN_ROLE_SLUG: str = "admin"
 
@@ -109,6 +123,17 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> List[str]:
         """Converte a string de CORS do .env em lista."""
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def asaas_base_url(self) -> str:
+        """Base URL da API do Asaas conforme o ambiente.
+
+        NOTA: NÃO inclui '/v3' — o AsaasClient monta as URLs como
+        f"{base_url}{path}", onde path já começa com '/v3/...'.
+        """
+        if self.ASAAS_ENV == "production":
+            return "https://api.asaas.com"
+        return "https://api-sandbox.asaas.com"
 
     @property
     def database_url(self) -> str:

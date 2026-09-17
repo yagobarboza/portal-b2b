@@ -9,9 +9,9 @@ Perfis iniciais:
 - cliente: somente recursos pertencentes a ele
 """
 from app.core.permissions import (
-    ADMIN_MANAGE, CART_MANAGE, CATALOG_MANAGE, CATALOG_READ,
-    CHAT_READ, CHAT_SEND, COMPANY_READ, CUSTOMER_CREATE, CUSTOMER_READ,
-    CUSTOMER_UPDATE, FILE_READ, FILE_UPLOAD, FINANCIAL_READ,
+    ADMIN_MANAGE, BILLING_MANAGE, BILLING_READ, CART_MANAGE, CATALOG_MANAGE,
+    CATALOG_READ, CHAT_READ, CHAT_SEND, COMPANY_READ, CUSTOMER_CREATE,
+    CUSTOMER_READ, CUSTOMER_UPDATE, FILE_READ, FILE_UPLOAD, FINANCIAL_READ,
     NOTIFICATION_READ, ORDER_CREATE, ORDER_MANAGE, ORDER_READ,
     ORDER_UPDATE, PRODUCT_CREATE, PRODUCT_DELETE, PRODUCT_READ,
     PRODUCT_UPDATE, SUPER_ADMIN, TICKET_CREATE, TICKET_READ,
@@ -30,7 +30,7 @@ ROLE_DEFINITIONS: dict[str, dict] = {
         "name": "Super Admin",
         "is_system": True,
         "global": True,  # tenant_id NULL
-        "permissions": [SUPER_ADMIN],
+        "permissions": [SUPER_ADMIN, BILLING_MANAGE],
     },
     ROLE_ADMIN: {
         "name": "Admin da Empresa",
@@ -48,6 +48,7 @@ ROLE_DEFINITIONS: dict[str, dict] = {
             FILE_UPLOAD, FILE_READ,
             NOTIFICATION_READ,
             ADMIN_MANAGE,
+            BILLING_READ,
         ],
     },
     ROLE_VENDEDOR: {

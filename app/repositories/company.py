@@ -1,10 +1,12 @@
 """Repositório de Company (white-label — Fase 0)."""
+import re
 from uuid import UUID
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.company import Company
+from app.models.enums import CompanyStatus
 
 class CompanyRepository:
     def __init__(self, db: AsyncSession) -> None:
@@ -16,6 +18,31 @@ class CompanyRepository:
         )
         return result.scalars().first()
 
+    async def get_by_cnpj(self, cnpj: str) -> Company | None:
+        """Busca empresa por CNPJ, normalizando máscara (pontos/barras/hífen).
+
+        Aceita '00.000.000/0000-00' ou '00000000000000' — a normalização é
+        feita no SQL (empresas podem estar salvas com ou sem máscara).
+        """
+        digits = re.sub(r"\D", "", cnpj)
+        if not digits:
+            return None
+        normalized = (
+            func.replace(
+                func.replace(
+                    func.replace(
+                        func.replace(Company.cnpj, ".", ""), "/", ""
+                    ),
+                    "-", "",
+                ),
+                " ", "",
+            )
+        )
+        result = await self.db.execute(
+            select(Company).where(normalized == digits)
+        )
+        return result.scalars().first()
+
     async def get_by_domain(self, domain: str) -> Company | None:
         """Busca uma empresa pelo domínio customizado (case-insensitive)."""
         stmt = select(Company).where(
@@ -23,6 +50,19 @@ class CompanyRepository:
         )
         result = await self.db.execute(stmt)
         return result.scalars().first()
+
+    async def set_status(
+        self, company: Company, status: CompanyStatus
+    ) -> Company:
+        """Altera o status da empresa (ativa/inativa).
+
+        Reutilizado pela reativação por pagamento (webhook Asaas) e pela
+        inativação por não pagamento (job de 30 dias). O cascade de
+        usuários/sessões é tratado no serviço que chama este método.
+        """
+        company.status = status
+        await self.db.flush()
+        return company
 
     async def list_all(
         self,

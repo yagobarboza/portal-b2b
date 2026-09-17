@@ -1,6 +1,7 @@
-﻿from uuid import UUID
+﻿from decimal import Decimal
+from uuid import UUID
 
-from sqlalchemy import String, text
+from sqlalchemy import Numeric, String, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -40,3 +41,13 @@ class Company(Base, TimestampMixin):
     # Cores da marca (formato hex, ex.: #0F4C81)
     primary_color: Mapped[str | None] = mapped_column(String(7), nullable=True)
     secondary_color: Mapped[str | None] = mapped_column(String(7), nullable=True)
+
+    # ===== Billing / Asaas =====
+    # ID do cliente no Asaas (reconciliação por CNPJ — nunca duplicar).
+    asaas_customer_id: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, index=True
+    )
+    # Valor fixo da mensalidade (definido pelo superadmin).
+    monthly_fee: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, server_default=text("0")
+    )
