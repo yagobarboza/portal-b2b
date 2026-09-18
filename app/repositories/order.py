@@ -10,6 +10,7 @@ from app.core.context import TenantContext
 from app.models import Cart, Order, OrderItem, OrderStatusHistory
 from app.models.enums import CartStatus, OrderStatus
 
+
 class OrderRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -73,13 +74,39 @@ class OrderRepository:
         return result.scalars().first()
 
     async def list_by_customer(
-        self, customer_id: UUID, page: int = 1, page_size: int = 20
+        self,
+        customer_id: UUID,
+        page: int = 1,
+        page_size: int = 20,
+        status: str | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        search: str | None = None,
+        sort_by: str = "created_at",
+        sort_dir: str = "desc",
     ) -> tuple[list[Order], int]:
+        """Lista os pedidos do cliente com filtros aplicados NO BANCO.
+
+        Filtros (valem para TODOS os pedidos, não só da página atual):
+          - status: status exato do pedido.
+          - date_from / date_to: intervalo pela data de criação (ISO 8601 UTC).
+          - search: busca parcial (case-insensitive) pelo número do pedido.
+          - sort_by: 'created_at' | 'number' | 'total'.
+          - sort_dir: 'asc' | 'desc'.
+        """
         base = select(Order).where(
             Order.tenant_id == self._tenant(),
             Order.customer_id == customer_id,
         )
-        return await self._paginate(base, page, page_size)
+        if status:
+            base = base.where(Order.status == status)
+        if date_from is not None:
+            base = base.where(Order.created_at >= date_from)
+        if date_to is not None:
+            base = base.where(Order.created_at <= date_to)
+        if search:
+            base = base.where(Order.number.ilike(f"%{search}%"))
+        return await self._paginate(base, page, page_size, sort_by, sort_dir)
 
     async def list_by_tenant(
         self,
@@ -106,16 +133,29 @@ class OrderRepository:
             base = base.where(Order.created_at <= date_to)
         return await self._paginate(base, page, page_size)
 
-    async def _paginate(self, base, page: int, page_size: int):
+    async def _paginate(
+        self,
+        base,
+        page: int,
+        page_size: int,
+        sort_by: str = "created_at",
+        sort_dir: str = "desc",
+    ):
         total = (
             await self.db.execute(select(func.count()).select_from(base.subquery()))
         ).scalar() or 0
+        order_col = {
+            "created_at": Order.created_at,
+            "number": Order.number,
+            "total": Order.total,
+        }.get(sort_by, Order.created_at)
+        order_expr = order_col.asc() if sort_dir == "asc" else order_col.desc()
         result = await self.db.execute(
             base.options(
                 selectinload(Order.items),
                 selectinload(Order.status_history),
             )
-            .order_by(Order.created_at.desc())
+            .order_by(order_expr)
             .offset((page - 1) * page_size)
             .limit(page_size)
         )

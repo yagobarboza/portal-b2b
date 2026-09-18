@@ -4,6 +4,7 @@
 - GET /orders                     -> listar pedidos do cliente (orders:read)
 - GET /orders/tenant              -> listar pedidos de todos os clientes (tenant)
 - GET /orders/{id}                -> detalhe
+- POST /orders/{id}/cancel        -> cliente cancela o próprio pedido
 - PATCH /orders/{id}/status       -> aprovar/rejeitar (tenant) — orders:manage
 - Isolamento por tenant + propriedade + RBAC
 """
@@ -27,13 +28,24 @@ from app.services.cart_validation import validate_cart_item
 
 router = APIRouter(prefix="/orders", tags=["Pedidos"])
 
+# ✅ Estados em que o CLIENTE ainda pode cancelar o próprio pedido.
+# (Depois de enviado/em trânsito/concluído, não pode mais.)
+CANCELLABLE_STATUSES = {
+    OrderStatus.SUBMITTED,
+    OrderStatus.UNDER_REVIEW,
+    OrderStatus.APPROVED,
+}
+
+
 def _get_customer(user: User) -> UUID:
     if not user.customer_id:
         raise ValidationError("Usuário não vinculado a um cliente.")
     return user.customer_id
 
+
 def _is_agent(user: User) -> bool:
     return user.is_super_admin or user.customer_id is None
+
 
 @router.post("", response_model=OrderRead, status_code=201)
 async def checkout(
@@ -70,6 +82,7 @@ async def checkout(
     order = await order_repo.get(order.id)
     return order
 
+
 @router.get("/tenant", response_model=OrderPage)
 async def list_tenant_orders(
     status: str | None = None,
@@ -101,23 +114,49 @@ async def list_tenant_orders(
         items=items, total=total, page=page, page_size=page_size, pages=pages
     )
 
+
 @router.get("", response_model=OrderPage)
 async def list_orders(
+    status: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    search: str | None = None,
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
     page: int = 1,
     page_size: int = 20,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission(ORDER_READ)),
 ) -> OrderPage:
-    """Cliente: lista os próprios pedidos."""
+    """Cliente: lista os próprios pedidos com filtros aplicados NO BANCO.
+
+    Os filtros valem para TODOS os pedidos do cliente (não só da página atual):
+      - status: status exato do pedido.
+      - date_from / date_to: intervalo pela data de CRIAÇÃO (ISO 8601 UTC).
+      - search: busca parcial (case-insensitive) pelo número do pedido.
+      - sort_by: 'created_at' | 'number' | 'total'.
+      - sort_dir: 'asc' | 'desc'.
+    """
     if _is_agent(user):
         raise NotFoundError("Página não encontrada.")
     customer_id = _get_customer(user)
     repo = OrderRepository(db)
-    items, total = await repo.list_by_customer(customer_id, page, page_size)
+    items, total = await repo.list_by_customer(
+        customer_id,
+        page=page,
+        page_size=page_size,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+        search=search,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
     pages = (total + page_size - 1) // page_size
     return OrderPage(
         items=items, total=total, page=page, page_size=page_size, pages=pages
     )
+
 
 @router.get("/{order_id}", response_model=OrderRead)
 async def get_order(
@@ -136,6 +175,41 @@ async def get_order(
     elif order.tenant_id != user.tenant_id:
         raise NotFoundError("Pedido não encontrado.")
     return order
+
+
+@router.post("/{order_id}/cancel", response_model=OrderRead)
+async def cancel_order(
+    order_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_permission(ORDER_CREATE)),
+) -> OrderRead:
+    """Cliente: cancela o próprio pedido (se ainda cancelável).
+
+    Registra o histórico de status (from_status -> cancelled) e dispara o
+    evento para integrações futuras (webhooks/API em tempo real) via o mesmo
+    fluxo de `update_status` + audit.
+    """
+    if _is_agent(user):
+        raise ForbiddenError("Acesso negado.")
+    customer_id = _get_customer(user)
+    repo = OrderRepository(db)
+    order = await repo.get(order_id)
+    if not order or order.customer_id != customer_id:
+        raise NotFoundError("Pedido não encontrado.")
+    if order.status not in CANCELLABLE_STATUSES:
+        raise ValidationError(
+            "Este pedido não pode ser cancelado no estado atual."
+        )
+    order = await repo.update_status(
+        order, OrderStatus.CANCELLED, "Pedido cancelado pelo cliente"
+    )
+    await record_audit(
+        db, action="cancel", entity="order",
+        entity_id=order.id, user_id=user.id, tenant_id=user.tenant_id,
+    )
+    await db.commit()
+    return await repo.get(order.id)
+
 
 @router.patch("/{order_id}/status", response_model=OrderRead)
 async def update_order_status(
