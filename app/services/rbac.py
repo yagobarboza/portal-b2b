@@ -30,7 +30,8 @@ ROLE_DEFINITIONS: dict[str, dict] = {
         "name": "Super Admin",
         "is_system": True,
         "global": True,  # tenant_id NULL
-        "permissions": [SUPER_ADMIN, BILLING_MANAGE],
+        # ✅ billing:read + billing:manage (acesso completo a billing)
+        "permissions": [SUPER_ADMIN, BILLING_MANAGE, BILLING_READ],
     },
     ROLE_ADMIN: {
         "name": "Admin da Empresa",
@@ -48,7 +49,8 @@ ROLE_DEFINITIONS: dict[str, dict] = {
             FILE_UPLOAD, FILE_READ,
             NOTIFICATION_READ,
             ADMIN_MANAGE,
-            BILLING_READ,
+            # ✅ billing:read + billing:manage (acesso completo a billing)
+            BILLING_READ, BILLING_MANAGE,
         ],
     },
     ROLE_VENDEDOR: {
