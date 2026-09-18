@@ -9,6 +9,7 @@ from app.core.exceptions import NotFoundError
 from app.core.invitations import hash_invite_token
 from app.models.invitation import Invitation, InvitationStatus
 
+
 class InvitationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -23,7 +24,7 @@ class InvitationRepository:
         tenant_id: UUID | None = None,
         full_name: str | None = None,
         invited_by: UUID | None = None,
-        customer_id: UUID | None = None,  # NOVO: vínculo ao cliente
+        customer_id: UUID | None = None,  # vínculo ao cliente
     ) -> Invitation:
         invitation = Invitation(
             tenant_id=tenant_id,
@@ -54,9 +55,17 @@ class InvitationRepository:
         return invitation
 
     async def list_by_tenant(self, tenant_id: UUID | None) -> list[Invitation]:
-        stmt = select(Invitation).order_by(Invitation.created_at.desc())
+        """Lista APENAS convites PENDENTES.
+
+        Convites cancelados ou aceitos não aparecem mais na lista
+        (corrige convite que "permanecia" após deletar e o duplicado).
+        """
+        stmt = select(Invitation).where(
+            Invitation.status == InvitationStatus.PENDING
+        )
         if tenant_id is not None:
             stmt = stmt.where(Invitation.tenant_id == tenant_id)
+        stmt = stmt.order_by(Invitation.created_at.desc())
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 

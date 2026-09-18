@@ -4,22 +4,26 @@
 - Apenas Admin da Empresa (admin:manage)
 """
 from uuid import UUID
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.api.deps import get_current_user, require_permission
+
+from app.api.deps import require_permission
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.permissions import ADMIN_MANAGE
 from app.database.session import get_db
 from app.models import User
-from app.models.rbac import Permission, Role, role_permissions
+from app.models.rbac import Permission, Role, role_permissions, user_roles
 from app.schemas.role import RoleCreate, RoleList, RoleRead, RoleUpdate
 from app.services.audit import record_audit
 
 router = APIRouter(prefix="/roles", tags=["Perfis"])
 
+
 def _is_agent(user: User) -> bool:
     return user.is_super_admin or user.customer_id is None
+
 
 async def _get_permissions(
     db: AsyncSession, codes: list[str]
@@ -31,18 +35,27 @@ async def _get_permissions(
     )
     return list(result.scalars().all())
 
+
 @router.get("", response_model=RoleList)
 async def list_roles(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission(ADMIN_MANAGE)),
 ) -> RoleList:
-    """Lista roles globais + roles do tenant."""
+    """Lista roles conforme o escopo do usuário.
+
+    - Super Admin: vê as roles GLOBAIS de sistema (tenant_id NULL).
+    - Admin da empresa: vê APENAS as roles DO PRÓPRIO tenant
+      (nunca as globais — corrige "Super Admin" aparecendo na empresa).
+    """
     if not _is_agent(user):
         raise NotFoundError("Página não encontrada.")
-    stmt = select(Role).where(
-        (Role.tenant_id.is_(None)) | (Role.tenant_id == user.tenant_id)
-    )
-    result = await db.execute(stmt)
+
+    if user.is_super_admin:
+        stmt = select(Role).where(Role.tenant_id.is_(None))
+    else:
+        stmt = select(Role).where(Role.tenant_id == user.tenant_id)
+
+    result = await db.execute(stmt.order_by(Role.name))
     roles = list(result.scalars().all())
     return RoleList(
         items=[
@@ -54,6 +67,7 @@ async def list_roles(
             for r in roles
         ]
     )
+
 
 @router.post("", response_model=RoleRead, status_code=201)
 async def create_role(
@@ -69,7 +83,9 @@ async def create_role(
 
     # Valida slug único no tenant
     existing = await db.execute(
-        select(Role).where(Role.slug == body.slug, Role.tenant_id == user.tenant_id)
+        select(Role).where(
+            Role.slug == body.slug, Role.tenant_id == user.tenant_id
+        )
     )
     if existing.scalars().first():
         raise ValidationError("Já existe um perfil com este slug.")
@@ -95,6 +111,7 @@ async def create_role(
         permissions=[p.code for p in role.permissions],
     )
 
+
 @router.patch("/{role_id}", response_model=RoleRead)
 async def update_role(
     role_id: UUID,
@@ -106,7 +123,7 @@ async def update_role(
     if not _is_agent(user):
         raise NotFoundError("Página não encontrada.")
 
-    # 🔒 Opção B: role global (sistema) → imutável, mensagem clara (422)
+    # Role global (sistema) → imutável, mensagem clara (422)
     system = await db.execute(
         select(Role).where(Role.id == role_id, Role.tenant_id.is_(None))
     )
@@ -114,7 +131,9 @@ async def update_role(
         raise ValidationError("Perfis de sistema não podem ser editados.")
 
     result = await db.execute(
-        select(Role).where(Role.id == role_id, Role.tenant_id == user.tenant_id)
+        select(Role).where(
+            Role.id == role_id, Role.tenant_id == user.tenant_id
+        )
     )
     role = result.scalars().first()
     if not role:
@@ -138,6 +157,7 @@ async def update_role(
         permissions=[p.code for p in role.permissions],
     )
 
+
 @router.delete("/{role_id}", status_code=204)
 async def delete_role(
     role_id: UUID,
@@ -148,7 +168,7 @@ async def delete_role(
     if not _is_agent(user):
         raise NotFoundError("Página não encontrada.")
 
-    # 🔒 Opção B: role global (sistema) → imutável, mensagem clara (422)
+    # Role global (sistema) → imutável, mensagem clara (422)
     system = await db.execute(
         select(Role).where(Role.id == role_id, Role.tenant_id.is_(None))
     )
@@ -156,12 +176,21 @@ async def delete_role(
         raise ValidationError("Perfis de sistema não podem ser excluídos.")
 
     result = await db.execute(
-        select(Role).where(Role.id == role_id, Role.tenant_id == user.tenant_id)
+        select(Role).where(
+            Role.id == role_id, Role.tenant_id == user.tenant_id
+        )
     )
     role = result.scalars().first()
     if not role:
         raise NotFoundError("Perfil não encontrado.")
-    await db.execute(role_permissions.delete().where(role_permissions.c.role_id == role.id))
+
+    # Remove vínculos de usuários e permissões antes de excluir
+    await db.execute(
+        role_permissions.delete().where(role_permissions.c.role_id == role.id)
+    )
+    await db.execute(
+        user_roles.delete().where(user_roles.c.role_id == role.id)
+    )
     await db.delete(role)
     await record_audit(
         db, action="delete", entity="role",
