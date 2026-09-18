@@ -1,12 +1,13 @@
 ﻿from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Numeric, String, text
+from sqlalchemy import Integer, Numeric, String, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base, TimestampMixin
 from app.models.enums import CompanyStatus, pg_enum
+
 
 class Company(Base, TimestampMixin):
     """Uma empresa cliente da plataforma = um TENANT.
@@ -51,3 +52,11 @@ class Company(Base, TimestampMixin):
     monthly_fee: Mapped[Decimal] = mapped_column(
         Numeric(14, 2), nullable=False, server_default=text("0")
     )
+
+    # ===== Regras de Compra (configuráveis pela própria empresa) =====
+    # Valor mínimo do pedido em R$ (None = sem restrição de valor).
+    min_order_value: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    # Quantidade mínima de itens (soma das quantidades; None = sem restrição).
+    min_order_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)

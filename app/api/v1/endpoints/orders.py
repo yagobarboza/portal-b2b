@@ -21,6 +21,7 @@ from app.database.session import get_db
 from app.models import User
 from app.models.enums import OrderStatus
 from app.repositories.cart import CartRepository
+from app.repositories.company import CompanyRepository
 from app.repositories.order import OrderRepository
 from app.schemas.order import OrderPage, OrderRead, OrderStatusUpdate
 from app.services.audit import record_audit
@@ -70,6 +71,24 @@ async def checkout(
         if price != item.unit_price:
             item.unit_price = price
             item.subtotal = item.quantity * price
+
+    # ✅ Valida as regras de compra da empresa (valor e/ou quantidade mínima).
+    tenant_id = user.tenant_id
+    if tenant_id:
+        company = await CompanyRepository(db).get(tenant_id)
+        if company:
+            total_cart = sum(i.subtotal for i in cart.items)
+            total_qty = sum(i.quantity for i in cart.items)
+            if company.min_order_value is not None and total_cart < company.min_order_value:
+                raise ValidationError(
+                    f"Valor mínimo de compra não atingido: o pedido deve ser "
+                    f"de pelo menos R$ {company.min_order_value:,.2f}."
+                )
+            if company.min_order_quantity is not None and total_qty < company.min_order_quantity:
+                raise ValidationError(
+                    f"Quantidade mínima de compra não atingida: são necessárias "
+                    f"pelo menos {company.min_order_quantity} unidade(s)."
+                )
 
     notes = (body or {}).get("notes") if body else None
     order_repo = OrderRepository(db)

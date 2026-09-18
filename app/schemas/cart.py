@@ -4,14 +4,17 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+
 class CartItemAdd(BaseModel):
     product_id: UUID
     # ✅ Quantidade é SEMPRE INTEIRA (unidades) — nunca "2.000".
     quantity: int = Field(gt=0)
 
+
 class CartItemUpdate(BaseModel):
     # ✅ Quantidade inteira (rejeita 2.5 / 2.0001 com 422).
     quantity: int = Field(gt=0)
+
 
 class CartItemRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -21,9 +24,13 @@ class CartItemRead(BaseModel):
     unit_price: Decimal
     subtotal: Decimal
 
+
 class CartRead(BaseModel):
     id: UUID
     customer_id: UUID
     status: str
     items: list[CartItemRead]
     total: Decimal
+    # ✅ Regras de compra da empresa (para o frontend refletir o aviso).
+    min_order_value: Decimal | None = None
+    min_order_quantity: int | None = None

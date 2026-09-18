@@ -1,5 +1,4 @@
 """Endpoints de empresas.
-
 GET  /companies                 — Super Admin lista todas as empresas (paginado).
 GET  /companies/branding        — identidade visual do tenant do usuário logado.
 GET  /companies/by-domain/{d}   — público: resolve o tenant pelo domínio (pré-login).
@@ -7,19 +6,18 @@ POST /companies                 — Super Admin cria empresa (tenant) + convida 
 PATCH /companies/{id}/status    — Super Admin inativa/reativa a empresa em cascata
 e notifica o admin por e-mail (NYD B2B).
 PATCH /companies/{id}           — Super Admin atualiza branding (logo, favicon, cores, nome).
-
+GET  /companies/purchase-rules  — empresa (staff) lê as próprias regras de compra.
+PATCH /companies/purchase-rules — empresa (staff) atualiza as próprias regras de compra.
 Usa o TenantContext (sessão autenticada) — nunca confia em domínio/ID vindo do front.
 Rate limit do by-domain via Redis (Bloco 17) — funciona com múltiplas instâncias.
 E-mail de convite: enviado via BackgroundTasks (o worker ARQ não roda no Render).
 """
 from datetime import datetime, timezone
 from uuid import UUID
-
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.api.deps import get_current_user, require_permission
 from app.core.config import get_settings
 from app.core.context import TenantContext
@@ -53,6 +51,8 @@ from app.repositories.invitation import InvitationRepository
 from app.schemas.company import (
     CompanyBranding,
     CompanyPage,
+    CompanyPurchaseRules,
+    CompanyPurchaseRulesUpdate,
     CompanyRead,
     CompanyStatusUpdate,
     CompanyUpdate,
@@ -68,6 +68,7 @@ router = APIRouter(prefix="/companies", tags=["Companies"])
 _DOMAIN_RATE_LIMIT = 30   # requisições por janela
 _DOMAIN_WINDOW = 60       # segundos
 
+
 async def _check_domain_rate_limit(domain: str) -> None:
     """Rate limit por domínio via Redis (anti-enumeração, multi-instância)."""
     allowed, _ = await check_rate_limit(
@@ -75,6 +76,7 @@ async def _check_domain_rate_limit(domain: str) -> None:
     )
     if not allowed:
         raise RateLimitedError("Muitas tentativas. Tente novamente em instantes.")
+
 
 @router.get("", response_model=CompanyPage)
 async def list_companies(
@@ -87,13 +89,66 @@ async def list_companies(
     """Lista todas as empresas (exclusivo Super Admin)."""
     if not user.is_super_admin:
         raise ForbiddenError("Apenas o Super Admin pode listar empresas.")
-
     repo = CompanyRepository(db)
     items, total = await repo.list_all(search, page, page_size)
     pages = (total + page_size - 1) // page_size
     return CompanyPage(
         items=items, total=total, page=page, page_size=page_size, pages=pages
     )
+
+
+@router.get("/purchase-rules", response_model=CompanyPurchaseRules)
+async def get_purchase_rules(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CompanyPurchaseRules:
+    """Empresa (staff): lê as próprias regras de compra."""
+    tenant_id = TenantContext.tenant_id()
+    if not tenant_id:
+        raise NotFoundError("Tenant não identificado.")
+    repo = CompanyRepository(db)
+    company = await repo.get(tenant_id)
+    if not company:
+        raise NotFoundError("Empresa não encontrada.")
+    return CompanyPurchaseRules(
+        min_order_value=company.min_order_value,
+        min_order_quantity=company.min_order_quantity,
+    )
+
+
+@router.patch("/purchase-rules", response_model=CompanyPurchaseRules)
+async def update_purchase_rules(
+    body: CompanyPurchaseRulesUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> CompanyPurchaseRules:
+    """Empresa (staff): atualiza as próprias regras de compra.
+
+    Envie apenas os campos que deseja alterar. Para REMOVER uma regra,
+    envie o campo como null (ex.: {"min_order_value": null}).
+    """
+    tenant_id = TenantContext.tenant_id()
+    if not tenant_id:
+        raise NotFoundError("Tenant não identificado.")
+    repo = CompanyRepository(db)
+    company = await repo.get(tenant_id)
+    if not company:
+        raise NotFoundError("Empresa não encontrada.")
+
+    data = body.model_dump(exclude_unset=True)
+    for key, value in data.items():
+        setattr(company, key, value)
+
+    await record_audit(
+        db, action="update", entity="company",
+        entity_id=company.id, user_id=user.id, tenant_id=tenant_id,
+    )
+    await db.commit()
+    return CompanyPurchaseRules(
+        min_order_value=company.min_order_value,
+        min_order_quantity=company.min_order_quantity,
+    )
+
 
 @router.get("/by-domain/{domain}", response_model=CompanyBranding)
 async def get_company_by_domain(
@@ -107,6 +162,7 @@ async def get_company_by_domain(
     if not company:
         raise NotFoundError("Empresa não encontrada para este domínio.")
     return CompanyBranding.model_validate(company)
+
 
 @router.get("/branding", response_model=CompanyBranding)
 async def get_branding(
@@ -123,6 +179,7 @@ async def get_branding(
         raise NotFoundError("Empresa não encontrada.")
     return CompanyBranding.model_validate(company)
 
+
 @router.post("", status_code=201)
 async def create_company_with_admin(
     body: CompanyCreateRequest,
@@ -132,7 +189,6 @@ async def create_company_with_admin(
     user: User = Depends(require_permission(COMPANY_MANAGE)),
 ) -> dict:
     """Super Admin cria a empresa (tenant) + convida o admin da empresa.
-
     Também cria as roles padrão do tenant (RBAC).
     E-mail de convite enviado em background (não trava a resposta).
     """
@@ -145,7 +201,6 @@ async def create_company_with_admin(
         raise ValidationFailedError(
             "Já existe uma empresa com este slug, domínio ou CNPJ."
         )
-
     # 2) Cria a empresa
     company = await repo.create_with_tenant(
         name=body.name,
@@ -196,7 +251,6 @@ async def create_company_with_admin(
                     role_id=role.id, permission_id=perm.id
                 )
             )
-
     # 5) Cria o usuário admin (status inactive até aceitar o convite)
     admin = User(
         tenant_id=company.id,
@@ -211,7 +265,6 @@ async def create_company_with_admin(
             user_id=admin.id, role_id=next(r.id for r in roles if r.slug == "admin")
         )
     )
-
     # 6) Convite + e-mail em background
     token = generate_invite_token()
     expires_at = compute_expires_at()
@@ -231,7 +284,6 @@ async def create_company_with_admin(
         entity_id=company.id, user_id=user.id, tenant_id=company.id,
     )
     await db.commit()
-
     background_tasks.add_task(
         send_invite_email,
         company.id,
@@ -243,6 +295,7 @@ async def create_company_with_admin(
     )
     return {"id": company.id, "name": company.name, "slug": company.slug, "status": "active"}
 
+
 @router.patch("/{company_id}/status", response_model=CompanyRead)
 async def update_company_status(
     company_id: UUID,
@@ -253,16 +306,13 @@ async def update_company_status(
     """Super Admin inativa/reativa a empresa em cascata"""
     if not user.is_super_admin:
         raise ForbiddenError("Apenas o Super Admin pode alterar empresas.")
-
     repo = CompanyRepository(db)
     company = await repo.get(company_id)
     if not company:
         raise NotFoundError("Empresa não encontrada.")
-
     new_status = body.status
     company.status = CompanyStatus(new_status)
     now = datetime.now(timezone.utc)
-
     if new_status == "inactive":
         # Usuários do tenant → inativos + sessões revogadas
         users = (
@@ -271,13 +321,13 @@ async def update_company_status(
         for u in users:
             u.status = UserStatus.INACTIVE
         await revoke_all_sessions(company_id)
-
     await record_audit(
         db, action="update", entity="company",
         entity_id=company.id, user_id=user.id, tenant_id=company_id,
     )
     await db.commit()
     return CompanyRead.model_validate(company)
+
 
 @router.patch("/{company_id}", response_model=CompanyRead)
 async def update_company_branding(
@@ -289,12 +339,10 @@ async def update_company_branding(
     """Super Admin atualiza branding da empresa (logo, favicon, cores, nome)."""
     if not user.is_super_admin:
         raise ForbiddenError("Apenas o Super Admin pode alterar empresas.")
-
     repo = CompanyRepository(db)
     company = await repo.get(company_id)
     if not company:
         raise NotFoundError("Empresa não encontrada.")
-
     data = body.model_dump(exclude_unset=True, exclude_none=True)
     if "slug" in data:
         dup = await repo.find_by_slug_or_domain_or_cnpj(data["slug"], None, None)
@@ -302,7 +350,6 @@ async def update_company_branding(
             raise ValidationFailedError("Já existe uma empresa com este slug.")
     for key, value in data.items():
         setattr(company, key, value)
-
     await record_audit(
         db, action="update", entity="company",
         entity_id=company.id, user_id=user.id, tenant_id=company_id,
