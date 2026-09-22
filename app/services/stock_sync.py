@@ -12,59 +12,46 @@ Três origens convergem para o MESMO motor de aplicação (`apply_stock_sync`):
 Garantias (comuns às três origens):
 - Isolamento por tenant: o tenant vem da CHAVE (agente), da SESSÃO (arquivo)
   ou da INTEGRAÇÃO resolvida pela URL assinada (webhook).
-- Idempotência: `batch_id` repetido é ignorado (Redis, fail-open).
+- Idempotência: inbox transacional no PostgreSQL antes de chamar este motor.
 - Estoque SEMPRE inteiro e ≥ 0 (truncado — nunca "10.000").
 - Nunca cria produto: SKU inexistente vira erro tratado (catálogo curado).
 - Cada execução fica registrada em SyncExecution (processed/errors/mensagem).
-- N+1 evitado: os SKUs do lote são resolvidos em UMA query.
+- N+1 evitado: SKUs são resolvidos e atualizados em chunks de 500.
 """
 import csv
 import io
-import logging
 from datetime import datetime, timezone
 
-import redis.asyncio as aioredis
 from openpyxl import load_workbook
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import bindparam, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.integrations.adapters import MappingStockAdapter
+from app.integrations.contracts import StockUpdate, normalize_sku
+from app.integrations.interfaces import StockAdapter
 from app.models import Product, SyncExecution
 from app.models.enums import SyncStatus
-from app.schemas.integration import MAX_IMPORT_ROWS, StockItem
-
-logger = logging.getLogger("stock_sync")
-
-settings = get_settings()
-_redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+from app.repositories.catalog import invalidate_product_cache
+from app.schemas.integration import MAX_IMPORT_ROWS
 
 # Entidade registrada em SyncExecution para ingestão de estoque.
 ENTITY = "stock"
 # Teto de mensagens devolvidas ao importador (anti-payload gigante).
 MAX_DETAILS = 50
-# TTL da chave de idempotência do lote (segundos).
-IDEMPOTENCY_TTL = int(getattr(settings, "STOCK_IDEMPOTENCY_TTL", 24 * 3600))
+STOCK_CHUNK_SIZE = 500
 
 # Cabeçalhos aceitos no arquivo (case-insensitive) — Bloco B2.
 SKU_HEADERS = ("sku", "codigo", "código", "codigo_sku")
 STOCK_HEADERS = ("stock", "estoque", "quantidade", "qtd", "saldo")
 EXTERNAL_ID_HEADERS = ("external_id", "id_externo")
+OCCURRED_AT_HEADERS = ("occurred_at", "data_hora", "atualizado_em")
+SOURCE_VERSION_HEADERS = ("source_version", "versao", "versão")
 
-# ==================== Idempotência e mensagens ====================
-async def _claim_batch(tenant_id, batch_id: str) -> bool:
-    """True se o lote é inédito. Fail-open: sem Redis, processa (não perde sync)."""
-    try:
-        key = f"idem:stock:{tenant_id}:{batch_id}"
-        return bool(await _redis.set(key, "1", nx=True, ex=IDEMPOTENCY_TTL))
-    except Exception:  # noqa: BLE001 — cache nunca derruba a ingestão
-        logger.warning("Redis indisponível — idempotência de lote ignorada.")
-        return True
-
-def _message(processed: int, unchanged: int, errors: int) -> str:
+def _message(processed: int, unchanged: int, stale: int, errors: int) -> str:
     return (
         f"{processed} atualizado(s), {unchanged} inalterado(s), "
-        f"{errors} erro(s)."
+        f"{stale} obsoleto(s), {errors} erro(s)."
     )
 
 def _first_error(exc: ValidationError) -> str:
@@ -122,17 +109,18 @@ def _pick(row: dict, headers: tuple[str, ...]) -> str:
 
 def parse_stock_rows(
     rows, max_rows: int = MAX_IMPORT_ROWS
-) -> tuple[list[StockItem], list[dict]]:
-    """Converte as linhas do arquivo em StockItem, separando os erros por linha.
+) -> tuple[list[StockUpdate], list[dict]]:
+    """Converte as linhas do arquivo em StockUpdate, separando erros por linha.
 
     NUNCA levanta por linha inválida: cada problema vira um item em `errors`
     (com o número da linha do arquivo) e o restante continua sendo importado.
     A primeira linha (cabeçalho) corresponde à linha 1, então os dados
     começam na linha 2.
     """
-    items: list[StockItem] = []
+    items: list[StockUpdate] = []
     errors: list[dict] = []
     data_rows = 0
+    adapter = MappingStockAdapter()
 
     for line, row in enumerate(rows, start=2):
         data_rows += 1
@@ -153,11 +141,13 @@ def parse_stock_rows(
             continue
 
         try:
-            item = StockItem.model_validate(
+            item = adapter.adapt_stock(
                 {
                     "sku": sku,
                     "stock": raw_stock,
                     "external_id": _pick(row, EXTERNAL_ID_HEADERS) or None,
+                    "occurred_at": _pick(row, OCCURRED_AT_HEADERS) or None,
+                    "source_version": _pick(row, SOURCE_VERSION_HEADERS) or None,
                 }
             )
         except ValidationError as exc:
@@ -173,36 +163,44 @@ def parse_stock_rows(
     return items, errors
 
 async def apply_stock_import(
-    db: AsyncSession, *, integration, filename: str, content: bytes
+    db: AsyncSession,
+    *,
+    integration,
+    filename: str,
+    content: bytes,
+    sync_execution: SyncExecution | None = None,
 ) -> dict:
     """Importa o estoque de um arquivo (CSV/Excel) e registra a execução.
 
     Reusa integralmente `apply_stock_sync`: os erros de PARSING do arquivo
     entram como `extra_errors` e são somados aos erros de aplicação.
     """
-    rows = list(iter_stock_rows(filename, content))
-    items, errors = parse_stock_rows(rows)
+    items, errors = parse_stock_rows(iter_stock_rows(filename, content))
     return await apply_stock_sync(
         db,
         integration=integration,
         items=items,
         batch_id=None,
         extra_errors=errors,
+        sync_execution=sync_execution,
     )
 
 # ==================== BLOCO B3 — Registros do webhook ====================
 def parse_stock_records(
-    records: list[dict], max_records: int = MAX_IMPORT_ROWS
-) -> tuple[list[StockItem], list[dict]]:
-    """Converte os registros JSON do evento `stock.sync` em StockItem.
+    records: list[dict],
+    max_records: int = MAX_IMPORT_ROWS,
+    adapter: StockAdapter | None = None,
+) -> tuple[list[StockUpdate], list[dict]]:
+    """Converte registros externos em StockUpdate via adapter canônico.
 
     Espelha `parse_stock_rows`, mas para o payload do webhook: o campo
     `index` identifica a posição do registro no array (1-based). Um registro
     inválido NUNCA derruba o lote — vira item em `errors`, e o restante
     continua sendo aplicado.
     """
-    items: list[StockItem] = []
+    items: list[StockUpdate] = []
     errors: list[dict] = []
+    stock_adapter = adapter or MappingStockAdapter()
 
     for index, rec in enumerate(records, start=1):
         if index > max_records:
@@ -214,28 +212,14 @@ def parse_stock_records(
             errors.append({"index": index, "error": "Registro inválido (não é objeto)."})
             continue
 
-        sku = str(rec.get("sku") or "").strip()
-        if not sku:
-            errors.append({"index": index, "error": "Registro sem SKU."})
-            continue
-
-        raw_stock = rec.get("stock")
-        if raw_stock is None or str(raw_stock).strip() == "":
-            errors.append({"index": index, "sku": sku, "error": "Registro sem valor de estoque."})
-            continue
-
-        external_id = rec.get("external_id")
-        external_id = str(external_id).strip() if external_id is not None else ""
+        source_sku = str(rec.get("sku") or "").strip()
         try:
-            item = StockItem.model_validate(
-                {
-                    "sku": sku,
-                    "stock": raw_stock,
-                    "external_id": external_id or None,
-                }
-            )
+            item = stock_adapter.adapt_stock(rec)
         except ValidationError as exc:
-            errors.append({"index": index, "sku": sku, "error": _first_error(exc)})
+            detail = {"index": index, "error": _first_error(exc)}
+            if source_sku:
+                detail["sku"] = source_sku
+            errors.append(detail)
             continue
 
         items.append(item)
@@ -250,6 +234,7 @@ async def apply_stock_sync(
     items,
     batch_id: str | None = None,
     extra_errors: list[dict] | None = None,
+    sync_execution: SyncExecution | None = None,
 ) -> dict:
     """Aplica um lote de estoque e registra a execução.
 
@@ -263,66 +248,51 @@ async def apply_stock_sync(
     tenant_id = integration.tenant_id
     now = datetime.now(timezone.utc)
 
-    # 1) Idempotência: o mesmo lote nunca é aplicado 2x (retry do agente).
-    if batch_id and not await _claim_batch(tenant_id, batch_id):
-        sync = SyncExecution(
-            tenant_id=tenant_id,
-            integration_id=integration.id,
-            entity=ENTITY,
-            status=SyncStatus.SUCCESS,
-            processed=0,
-            errors=0,
-            started_at=now,
-            finished_at=now,
-            message="Lote já processado anteriormente (idempotência).",
-        )
-        db.add(sync)
-        await db.flush()
-        return {
-            "sync_id": sync.id,
-            "status": "duplicate",
-            "processed": 0,
-            "unchanged": 0,
-            "errors": 0,
-            "message": sync.message,
-            "details": [],
-        }
-
-    # 2) Registra a execução como RUNNING (trilha de auditoria).
-    sync = SyncExecution(
+    # A idempotência é garantida antes daqui pela inbox transacional.
+    sync = sync_execution or SyncExecution(
         tenant_id=tenant_id,
         integration_id=integration.id,
         entity=ENTITY,
-        status=SyncStatus.RUNNING,
-        started_at=now,
     )
-    db.add(sync)
+    if sync_execution is None:
+        db.add(sync)
+    sync.status = SyncStatus.RUNNING
+    sync.started_at = sync.started_at or now
+    sync.last_attempt_at = now
     await db.flush()
 
-    # 3) Deduplica o lote por SKU (última ocorrência vence) e resolve em 1 query.
-    wanted: dict[str, StockItem] = {}
+    # Deduplica pelo evento temporal mais novo; no empate, a última ocorrência vence.
+    wanted: dict[str, StockUpdate] = {}
     for item in items:
-        key = (item.sku or "").strip().lower()
-        if key:
+        key = normalize_sku(item.sku)
+        previous = wanted.get(key)
+        if key and (
+            previous is None
+            or item.occurred_at is None
+            or previous.occurred_at is None
+            or item.occurred_at >= previous.occurred_at
+        ):
             wanted[key] = item
 
     found: dict[str, Product] = {}
-    if wanted:
+    keys = list(wanted)
+    for offset in range(0, len(keys), STOCK_CHUNK_SIZE):
+        chunk = keys[offset : offset + STOCK_CHUNK_SIZE]
         result = await db.execute(
             select(Product).where(
                 Product.tenant_id == tenant_id,
                 Product.is_deleted == False,  # noqa: E712 — ignora soft delete
-                func.lower(Product.sku).in_(list(wanted.keys())),
+                Product.normalized_sku.in_(chunk),
             )
         )
-        found = {(p.sku or "").lower(): p for p in result.scalars().all()}
+        found.update({p.normalized_sku: p for p in result.scalars().all()})
 
-    # 4) Aplica item a item (só grava o que realmente mudou).
-    #    Os erros de parsing (B2/B3) entram na contagem desde o início.
     processed = 0
     unchanged = 0
+    stale = 0
     errors = len(extra_errors or [])
-    details: list[dict] = list(extra_errors or [])
+    details: list[dict] = list(extra_errors or [])[:MAX_DETAILS]
+    updates: list[dict] = []
 
     for key, item in wanted.items():
         product = found.get(key)
@@ -333,18 +303,65 @@ async def apply_stock_sync(
                     {"sku": item.sku, "error": "SKU não encontrado no catálogo."}
                 )
             continue
+        incoming_at = item.occurred_at or now
+        if incoming_at.tzinfo is None:
+            incoming_at = incoming_at.replace(tzinfo=timezone.utc)
+        stored_at = product.stock_updated_at
+        if stored_at is not None and stored_at.tzinfo is None:
+            stored_at = stored_at.replace(tzinfo=timezone.utc)
+        if item.source_version and item.source_version == product.stock_source_version:
+            if product.stock == item.stock:
+                unchanged += 1
+            else:
+                errors += 1
+                stale += 1
+                if len(details) < MAX_DETAILS:
+                    details.append(
+                        {"sku": item.sku, "error": "Versão da fonte repetida com saldo diferente."}
+                    )
+            continue
+        if item.occurred_at is not None and stored_at is not None and incoming_at <= stored_at:
+            stale += 1
+            continue
         if product.stock == item.stock:
             unchanged += 1
             continue
-        product.stock = item.stock
+        updates.append(
+            {
+                "_product_id": product.id,
+                "_stock": item.stock,
+                "_stock_updated_at": incoming_at,
+                "_stock_updated_at_guard": incoming_at,
+                "_stock_source_version": item.source_version,
+            }
+        )
         processed += 1
+
+    statement = (
+        update(Product.__table__)
+        .where(
+            Product.__table__.c.id == bindparam("_product_id"),
+            or_(
+                Product.__table__.c.stock_updated_at.is_(None),
+                Product.__table__.c.stock_updated_at
+                < bindparam("_stock_updated_at_guard"),
+            ),
+        )
+        .values(
+            stock=bindparam("_stock"),
+            stock_updated_at=bindparam("_stock_updated_at"),
+            stock_source_version=bindparam("_stock_source_version"),
+        )
+    )
+    for offset in range(0, len(updates), STOCK_CHUNK_SIZE):
+        await db.execute(statement, updates[offset : offset + STOCK_CHUNK_SIZE])
 
     # 5) Fecha a execução com o resumo (seção 33).
     if errors == 0:
         final_status = SyncStatus.SUCCESS
         label = "ok"
     elif processed or unchanged:
-        final_status = SyncStatus.SUCCESS
+        final_status = SyncStatus.PARTIAL
         label = "partial"
     else:
         final_status = SyncStatus.FAILED
@@ -354,15 +371,30 @@ async def apply_stock_sync(
     sync.processed = processed
     sync.errors = errors
     sync.finished_at = datetime.now(timezone.utc)
-    sync.message = _message(processed, unchanged, errors)
-    await db.flush()
-
-    return {
+    sync.terminal_at = sync.finished_at
+    sync.next_retry_at = None
+    sync.message = _message(processed, unchanged, stale, errors)
+    result = {
         "sync_id": sync.id,
         "status": label,
         "processed": processed,
         "unchanged": unchanged,
+        "stale": stale,
         "errors": errors,
         "message": sync.message,
         "details": details,
     }
+    from app.services.integration_observability import finish_run_from_result
+
+    finish_run_from_result(
+        sync,
+        result,
+        items_received=len(items) + len(extra_errors or []),
+    )
+    await db.flush()
+    if processed:
+        await invalidate_product_cache(tenant_id)
+
+    result["message"] = sync.message
+    result["details"] = sync.item_errors or []
+    return result

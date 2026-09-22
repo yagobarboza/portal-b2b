@@ -1,11 +1,13 @@
 ﻿from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import (
     Boolean,
     Column,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -71,7 +73,11 @@ class Category(Base, TenantMixin, TimestampMixin, SoftDeleteMixin):
 class Product(Base, TenantMixin, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "products"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "sku", name="uq_products_tenant_sku"),
+        UniqueConstraint(
+            "tenant_id",
+            "normalized_sku",
+            name="uq_products_tenant_normalized_sku",
+        ),
         Index("ix_products_tenant_status", "tenant_id", "status"),
     )
 
@@ -81,6 +87,7 @@ class Product(Base, TenantMixin, TimestampMixin, SoftDeleteMixin):
         server_default=text("gen_random_uuid()"),
     )
     sku: Mapped[str] = mapped_column(String(80), nullable=False)
+    normalized_sku: Mapped[str] = mapped_column(String(80), nullable=False)
     code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -97,6 +104,12 @@ class Product(Base, TenantMixin, TimestampMixin, SoftDeleteMixin):
     )
     # ✅ Estoque é SEMPRE inteiro (unidades) — nunca 15.000. Sincronizado via ERP.
     stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stock_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    stock_source_version: Mapped[str | None] = mapped_column(
+        String(120), nullable=True
+    )
     status: Mapped[ProductStatus] = mapped_column(
         pg_enum(ProductStatus, "product_status"),
         nullable=False,

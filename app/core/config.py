@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import List
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -29,6 +30,9 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    # Chave dedicada às credenciais de integrações. Em produção deve ser
+    # diferente de SECRET_KEY para permitir rotação independente do JWT.
+    INTEGRATION_ENCRYPTION_KEY: str = ""
 
     # ===== COOKIES SEGUROS (seção 10) =====
     COOKIE_SECURE: bool = False  # True em produção (HTTPS)
@@ -65,9 +69,10 @@ class Settings(BaseSettings):
     REDIS_URL: str = ""
 
     # ===== WEBHOOKS (seção 31) =====
-    WEBHOOK_SECRET: str = ""  # segredo para assinatura HMAC — definir no .env
     WEBHOOK_RATE_LIMIT: int = 60      # eventos/minuto por integração
-    WEBHOOK_IDEMPOTENCY_TTL: int = 86400  # segundos p/ proteção contra replay
+    WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS: int = 300
+    WEBHOOK_SECRET_ROTATION_GRACE_SECONDS: int = 86400
+    WEBHOOK_PROCESSING_LEASE_SECONDS: int = 300
 
     # ===== ASAAS (integração de cobrança/assinatura) =====
     # Ambiente: "sandbox" | "production" (definido no .env)
@@ -103,6 +108,13 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"   # development | staging | production
     SENTRY_DSN: str = ""              # se vazio, Sentry fica desligado
     SENTRY_TRACES_SAMPLE_RATE: float = 0.1
+    INTEGRATION_MAX_ITEM_ERRORS: int = 50
+    INTEGRATION_PAYLOAD_RETENTION_DAYS: int = 30
+    INTEGRATION_EVENT_RETENTION_DAYS: int = 90
+    INTEGRATION_RUN_RETENTION_DAYS: int = 365
+    INTEGRATION_FAILURE_ALERT_THRESHOLD: int = 3
+    INTEGRATION_STALE_SUCCESS_HOURS: int = 24
+    WORKER_METRICS_PORT: int = 9100
 
     # ===== POOL DE CONEXÕES (Bloco 14 — seção 54) =====
     DB_POOL_SIZE: int = 10
@@ -118,6 +130,19 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: str = ""
     INVITE_TOKEN_EXPIRE_HOURS: int = 72
     DEFAULT_ADMIN_ROLE_SLUG: str = "admin"
+
+    @model_validator(mode="after")
+    def _validate_production_integration_key(self):
+        if self.APP_ENV.lower() == "production":
+            if not self.INTEGRATION_ENCRYPTION_KEY:
+                raise ValueError(
+                    "INTEGRATION_ENCRYPTION_KEY é obrigatória em produção."
+                )
+            if self.INTEGRATION_ENCRYPTION_KEY == self.SECRET_KEY:
+                raise ValueError(
+                    "INTEGRATION_ENCRYPTION_KEY deve ser diferente de SECRET_KEY."
+                )
+        return self
 
     @property
     def cors_origins_list(self) -> List[str]:

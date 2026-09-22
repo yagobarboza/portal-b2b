@@ -4,9 +4,9 @@
   HMAC-SHA256 no header X-Webhook-Signature.
 - Toda entrada é tratada como NÃO confiável (seção 41): limite de tamanho,
   JSON validado, IDs tipados.
-- Ordem de segurança: assinatura -> integração -> rate limit -> replay -> processamento.
+- Ordem: assinatura -> integração -> rate limit -> inbox transacional -> ACK -> fila.
 - Falhas NUNCA desaparecem: o evento WebhookEvent é registrado com status
-  (processed/failed) mesmo quando o processamento falha (seção 33).
+  e a inbox termina em succeeded/dead_letter sem perda silenciosa.
 """
 import json
 from uuid import UUID
@@ -15,28 +15,27 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
-    ConflictError,
-    NotFoundError,
     RateLimitedError,
     UnauthorizedError,
     ValidationError,
 )
+from app.core.config import get_settings
 from app.database.session import get_db
-from app.models.enums import WebhookStatus
+from app.core.queue import enqueue_job
 from app.repositories.integration import IntegrationRepository
+from app.schemas.integration import InboxAccepted
 from app.services.integration import (
-    process_webhook_payload,
     verify_webhook_signature,
-    webhook_idempotency,
     webhook_rate_limit,
 )
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
+settings = get_settings()
 
 # Limite de tamanho do corpo (seção 41 — entrada externa não confiável)
 MAX_BODY_BYTES = 256 * 1024  # 256 KiB
 
-@router.post("/{integration_id}")
+@router.post("/{integration_id}", response_model=InboxAccepted, status_code=202)
 async def receive_webhook(
     integration_id: UUID,
     request: Request,
@@ -50,51 +49,86 @@ async def receive_webhook(
     if len(raw) > MAX_BODY_BYTES:
         raise ValidationError("Corpo excede o limite permitido.")
 
-    # 2) Autenticação por assinatura HMAC (seção 31) — antes de revelar a integração
-    signature = request.headers.get("x-webhook-signature", "")
-    if not await verify_webhook_signature(raw, signature):
-        raise UnauthorizedError("Assinatura inválida.")
-
-    # 3) Integração existe e está ativa
+    # 2) Resolve a integração para obter o segredo individual. A resposta de
+    # autenticação permanece genérica para não revelar existência/configuração.
     repo = IntegrationRepository(db)
     integration = await repo.get(integration_id)
-    if not integration or not integration.is_active:
-        raise NotFoundError("Integração não encontrada.")
+    if not integration or not integration.is_active or integration.type != "webhook":
+        raise UnauthorizedError("Assinatura inválida.")
+
+    # 3) Autenticação HMAC com timestamp e integration_id vinculados à assinatura.
+    signature = request.headers.get("x-webhook-signature", "")
+    timestamp = request.headers.get("x-webhook-timestamp", "")
+    credential = await repo.get_webhook_credential(integration)
+    if not await verify_webhook_signature(
+        raw, signature, timestamp, integration, credential
+    ):
+        raise UnauthorizedError("Assinatura inválida.")
 
     # 4) Rate limit por integração (seção 31)
     if not await webhook_rate_limit(integration.id):
         raise RateLimitedError("Muitas requisições.")
 
-    # 5) Proteção contra replay (seção 31)
-    idem_key = request.headers.get("x-idempotency-key")
-    if idem_key and not await webhook_idempotency(integration.id, idem_key):
-        raise ConflictError("Evento duplicado (replay).")
+    # 5) A chave é obrigatória e persistida no PostgreSQL. Duplicatas
+    # processadas recebem ACK idempotente, sem estimular retries infinitos.
+    idem_key = (request.headers.get("x-idempotency-key") or "").strip()
+    if not idem_key or len(idem_key) > 200:
+        raise ValidationError("X-Idempotency-Key ausente ou inválido.")
 
     # 6) Validação do payload JSON (seção 41) — nunca deixa 500 vazar
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         raise ValidationError("Payload JSON inválido.")
-
-    # 7) Registra o evento e processa (idempotente por external_id, seção 30).
-    #    O evento é commitado ANTES do processamento para que a falha
-    #    fique registrada mesmo se o processamento explodir (seção 33).
-    event = await repo.create_webhook_event(
-        integration.id, integration.tenant_id, payload
-    )
-    await db.commit()
+    if not isinstance(payload, dict):
+        raise ValidationError("Payload JSON deve ser um objeto.")
 
     try:
-        result = await process_webhook_payload(db, integration, event, payload)
-        event.status = WebhookStatus.PROCESSED
+        inbox, created = await repo.create_or_get_inbox(
+            integration=integration,
+            channel="webhook",
+            capability=str(payload.get("event") or "unknown"),
+            idempotency_key=idem_key,
+            payload=payload,
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+
+    if created:
+        event_name = str(payload.get("event") or "unknown")
+        entity = {
+            "stock.sync": "stock",
+            "product.sync": "products",
+            "financial.sync": "financial",
+        }.get(event_name, "unknown")
+        run = await repo.create_sync(
+            integration.id,
+            integration.tenant_id,
+            entity,
+            trigger="webhook",
+            correlation_id=idem_key[:120],
+            request_size_bytes=len(raw),
+            run_metadata={"event": event_name[:50]},
+        )
+        inbox.run_id = run.id
+        event = await repo.create_webhook_event(
+            integration.id,
+            integration.tenant_id,
+            payload,
+            idem_key,
+            inbox_id=inbox.id,
+        )
         await db.commit()
-        return result
-    except Exception:
-        await db.rollback()
-        # Falha registrada — nunca desaparece (seção 33)
-        try:
-            event.status = WebhookStatus.FAILED
-            await db.commit()
-        except Exception:
-            await db.rollback()
-        raise
+        # A queda do Redis não perde o evento: o dispatcher periódico busca
+        # toda inbox pendente. O ACK depende apenas do commit no PostgreSQL.
+        await enqueue_job(
+            "process_inbox_job", inbox_id=str(inbox.id)
+        )
+    else:
+        event = await repo.get_webhook_event_by_idempotency(integration.id, idem_key)
+        await db.commit()
+    return InboxAccepted(
+        status="accepted" if created else "duplicate",
+        event_id=event.id if event else None,
+        inbox_id=inbox.id,
+    )

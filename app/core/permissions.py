@@ -2,7 +2,8 @@
 
 Formato: {modulo}:{acao}
 - modulo: companies, users, customers, products, catalogs, cart,
-  orders, tickets, chat, financial, files, notifications, admin, billing
+  orders, tickets, chat, financial, files, notifications, integrations,
+  admin, billing
 - acao: read, create, update, delete, manage
 """
 
@@ -66,6 +67,12 @@ ADMIN_MANAGE = "admin:manage"
 BILLING_READ = "billing:read"      # admin da empresa vê as cobranças dela
 BILLING_MANAGE = "billing:manage"  # superadmin cria/gerencia cobranças
 
+# ===== Integrations =====
+INTEGRATION_READ = "integrations:read"
+INTEGRATION_MANAGE = "integrations:manage"
+INTEGRATION_RUN = "integrations:run"
+INTEGRATION_SECRETS = "integrations:secrets"
+
 # ===== Super admin (acesso total) =====
 SUPER_ADMIN = "super_admin:all"
 
@@ -103,6 +110,10 @@ PERMISSION_CATALOG: list[dict] = [
     {"code": ADMIN_MANAGE, "name": "Administração", "module": "admin", "description": "Funções administrativas do tenant"},
     {"code": BILLING_READ, "name": "Ver cobranças", "module": "billing", "description": "Ver cobranças/assinaturas da empresa"},
     {"code": BILLING_MANAGE, "name": "Gerenciar cobranças", "module": "billing", "description": "Criar/gerenciar cobranças (Super Admin)"},
+    {"code": INTEGRATION_READ, "name": "Ver integrações", "module": "integrations", "description": "Visualizar integrações e execuções do tenant"},
+    {"code": INTEGRATION_MANAGE, "name": "Gerenciar integrações", "module": "integrations", "description": "Criar e configurar integrações do tenant"},
+    {"code": INTEGRATION_RUN, "name": "Executar integrações", "module": "integrations", "description": "Executar importações, pulls e sincronizações"},
+    {"code": INTEGRATION_SECRETS, "name": "Gerenciar segredos de integrações", "module": "integrations", "description": "Emitir, rotacionar e revogar credenciais de integrações"},
     {"code": SUPER_ADMIN, "name": "Super Admin", "module": "admin", "description": "Acesso global à plataforma"},
 ]
 

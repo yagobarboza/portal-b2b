@@ -9,7 +9,7 @@ services:
     plan: free
     branch: master            # ← corrigido (era "main", que não existe)
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /health/live
+    healthCheckPath: /api/v1/health/live
     autoDeploy: true
     envVars:
       - key: APP_ENV
@@ -26,6 +26,8 @@ services:
         sync: false
       - key: SECRET_KEY
         sync: false
+      - key: INTEGRATION_ENCRYPTION_KEY
+        sync: false
       - key: CORS_ORIGINS
         sync: false
       - key: R2_ACCOUNT_ID
@@ -39,8 +41,6 @@ services:
       - key: R2_ENDPOINT_URL
         sync: false
       - key: R2_PUBLIC_BASE_URL
-        sync: false
-      - key: WEBHOOK_SECRET
         sync: false
       - key: SENTRY_DSN
         sync: false
@@ -76,6 +76,8 @@ services:
         sync: false
       - key: SECRET_KEY
         sync: false
+      - key: INTEGRATION_ENCRYPTION_KEY
+        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: R2_ACCOUNT_ID
@@ -89,8 +91,6 @@ services:
       - key: R2_ENDPOINT_URL
         sync: false
       - key: R2_PUBLIC_BASE_URL
-        sync: false
-      - key: WEBHOOK_SECRET
         sync: false
       - key: SENTRY_DSN
         sync: false

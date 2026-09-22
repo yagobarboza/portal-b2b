@@ -99,7 +99,11 @@ async def require_integration_key(
 
     repo = IntegrationRepository(db)
     integration = await repo.get_by_agent_api_key(raw)
-    if integration is None or not integration.is_active:
+    if (
+        integration is None
+        or not integration.is_active
+        or integration.type != "agent"
+    ):
         # Mensagem genérica (não revela se a chave existe ou está inativa).
         raise UnauthorizedError("Chave de API inválida.")
 

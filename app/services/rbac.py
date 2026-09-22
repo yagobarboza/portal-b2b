@@ -6,6 +6,7 @@ Perfis iniciais:
 - vendedor: clientes, pedidos e atendimento comercial
 - financeiro: dados financeiros autorizados
 - suporte: tickets e atendimento
+- suporte_tecnico: gestão das integrações ERP
 - cliente: somente recursos pertencentes a ele
 """
 from app.core.permissions import (
@@ -16,6 +17,8 @@ from app.core.permissions import (
     ORDER_UPDATE, PRODUCT_CREATE, PRODUCT_DELETE, PRODUCT_READ,
     PRODUCT_UPDATE, SUPER_ADMIN, TICKET_CREATE, TICKET_READ,
     TICKET_UPDATE, USER_CREATE, USER_DELETE, USER_READ, USER_UPDATE,
+    INTEGRATION_READ, INTEGRATION_MANAGE, INTEGRATION_RUN,
+    INTEGRATION_SECRETS,
 )
 
 ROLE_SUPER_ADMIN = "super_admin"
@@ -23,6 +26,7 @@ ROLE_ADMIN = "admin"
 ROLE_VENDEDOR = "vendedor"
 ROLE_FINANCEIRO = "financeiro"
 ROLE_SUPORTE = "suporte"
+ROLE_SUPORTE_TECNICO = "suporte_tecnico"
 ROLE_CLIENTE = "cliente"
 
 ROLE_DEFINITIONS: dict[str, dict] = {
@@ -49,6 +53,8 @@ ROLE_DEFINITIONS: dict[str, dict] = {
             FILE_UPLOAD, FILE_READ,
             NOTIFICATION_READ,
             ADMIN_MANAGE,
+            INTEGRATION_READ, INTEGRATION_MANAGE, INTEGRATION_RUN,
+            INTEGRATION_SECRETS,
             # ✅ billing:read + billing:manage (acesso completo a billing)
             BILLING_READ, BILLING_MANAGE,
         ],
@@ -80,6 +86,18 @@ ROLE_DEFINITIONS: dict[str, dict] = {
         "permissions": [
             TICKET_READ, TICKET_CREATE, TICKET_UPDATE,
             CHAT_READ, CHAT_SEND, CUSTOMER_READ, NOTIFICATION_READ,
+        ],
+    },
+    ROLE_SUPORTE_TECNICO: {
+        "name": "Suporte Técnico",
+        "description": (
+            "Gerencia configurações, credenciais e execuções das integrações ERP."
+        ),
+        "is_system": True,
+        "global": False,
+        "permissions": [
+            INTEGRATION_READ, INTEGRATION_MANAGE, INTEGRATION_RUN,
+            INTEGRATION_SECRETS,
         ],
     },
     ROLE_CLIENTE: {

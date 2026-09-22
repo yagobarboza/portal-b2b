@@ -73,6 +73,8 @@ services:
     volumes:
       - ./app:/app/app
       - ./worker:/app/worker
+    ports:
+      - "9100:9100"
     depends_on:
       postgres:
         condition: service_healthy

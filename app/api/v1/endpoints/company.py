@@ -221,11 +221,12 @@ async def create_company_with_admin(
             {
                 "tenant_id": company.id,
                 "name": definition["name"],
-                "slug": definition["slug"],
+                "slug": slug,
                 "description": definition.get("description"),
                 "is_system": definition.get("is_system", True),
             }
-            for definition in ROLE_DEFINITIONS.values()
+            for slug, definition in ROLE_DEFINITIONS.items()
+            if not definition.get("global", False)
         ],
     )
     # 4) Vincula as permissões das roles padrão

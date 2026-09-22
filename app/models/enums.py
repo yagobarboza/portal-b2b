@@ -80,12 +80,16 @@ class SyncStatus(str, enum.Enum):
     PENDING = "pending"
     RUNNING = "running"
     SUCCESS = "success"
+    PARTIAL = "partial"
     FAILED = "failed"
+    DEAD_LETTER = "dead_letter"
 
 class WebhookStatus(str, enum.Enum):
     RECEIVED = "received"
+    PROCESSING = "processing"
     PROCESSED = "processed"
     FAILED = "failed"
+    DEAD_LETTER = "dead_letter"
 
 class NotificationType(str, enum.Enum):
     ORDER = "order"

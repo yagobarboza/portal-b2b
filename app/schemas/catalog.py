@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.integrations.contracts import normalize_sku
+
 # ---------- Validação anti-XSS (descrição é conteúdo rico permitido, nunca scripts) ----------
 _XSS_PATTERNS = (r"<\s*script", r"\bon\w+\s*=", r"javascript\s*:")
 
@@ -68,6 +70,11 @@ class ProductBase(BaseModel):
     # ✅ URL EXTERNA da imagem (CDN/storage do cliente). Vazio/None = usa R2.
     image_url: str | None = Field(None, max_length=2048)
 
+    @field_validator("sku", mode="before")
+    @classmethod
+    def _normalize_sku(cls, v) -> str:
+        return normalize_sku(v)
+
     @field_validator("description")
     @classmethod
     def _validate_description(cls, v: str | None) -> str | None:
@@ -89,6 +96,11 @@ class ProductUpdate(BaseModel):
     stock: int | None = Field(None, ge=0)
     # ✅ URL EXTERNA. Enviar "" (string vazia) LIMPA a imagem externa (→ NULL).
     image_url: str | None = Field(None, max_length=2048)
+
+    @field_validator("sku", mode="before")
+    @classmethod
+    def _normalize_sku(cls, v):
+        return None if v is None else normalize_sku(v)
 
     @field_validator("description")
     @classmethod

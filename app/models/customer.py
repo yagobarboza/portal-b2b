@@ -1,6 +1,6 @@
 ﻿from uuid import UUID
 
-from sqlalchemy import String, text
+from sqlalchemy import String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,6 +16,9 @@ class Customer(Base, TenantMixin, TimestampMixin, SoftDeleteMixin):
     """
 
     __tablename__ = "customers"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", name="uq_customers_id_tenant"),
+    )
 
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),

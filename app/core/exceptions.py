@@ -53,6 +53,14 @@ class RateLimitedError(AppError):
     def __init__(self, message: str = "Muitas requisições. Tente novamente mais tarde.") -> None:
         super().__init__(message, "RATE_LIMITED", 429)
 
+class ServiceUnavailableError(AppError):
+    def __init__(self, message: str = "Serviço temporariamente indisponível.") -> None:
+        super().__init__(message, "SERVICE_UNAVAILABLE", 503)
+
+class FeatureUnavailableError(AppError):
+    def __init__(self, message: str = "Funcionalidade temporariamente indisponível.") -> None:
+        super().__init__(message, "FEATURE_UNAVAILABLE", 501)
+
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
     """Resposta de erro padronizada (sem detalhes internos)."""
     return JSONResponse(

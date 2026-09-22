@@ -138,6 +138,8 @@ async def update_role(
     role = result.scalars().first()
     if not role:
         raise NotFoundError("Perfil não encontrado.")
+    if role.is_system:
+        raise ValidationError("Perfis de sistema não podem ser editados.")
 
     data = body.model_dump(exclude_unset=True)
     if "permission_codes" in data:
@@ -183,6 +185,8 @@ async def delete_role(
     role = result.scalars().first()
     if not role:
         raise NotFoundError("Perfil não encontrado.")
+    if role.is_system:
+        raise ValidationError("Perfis de sistema não podem ser excluídos.")
 
     # Remove vínculos de usuários e permissões antes de excluir
     await db.execute(

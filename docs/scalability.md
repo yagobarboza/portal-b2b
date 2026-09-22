@@ -6,7 +6,8 @@
 
 ## Escala horizontal (múltiplas réplicas da API)
 - Subir N réplicas atrás de um load balancer (nginx/ALB).
-- Redis compartilhado: rate limit, cache de catálogo, idempotência de webhook.
+- Redis compartilhado: rate limit, cache de catálogo e transporte da fila.
+- PostgreSQL: inbox/idempotência, schedules, cursores, arquivos e execuções duráveis.
 - R2 (S3): armazenamento de arquivos centralizado.
 - PostgreSQL: pool configurado (DB_POOL_SIZE/MAX_OVERFLOW) para N réplicas.
   - Regra: soma de (pool_size + max_overflow) x réplicas <= max_connections do Postgres.

@@ -12,6 +12,7 @@ from typing import Any
 import structlog
 
 from app.core.config import get_settings
+from app.core.redaction import structlog_redactor
 
 settings = get_settings()
 
@@ -22,6 +23,7 @@ SHARED_PROCESSORS: list[Any] = [
     structlog.processors.TimeStamper(fmt="iso", utc=True),
     structlog.processors.StackInfoRenderer(),
     structlog.processors.format_exc_info,
+    structlog_redactor,
 ]
 
 def setup_logging() -> None:

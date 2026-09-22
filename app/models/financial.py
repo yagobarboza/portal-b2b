@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Numeric,
     String,
@@ -24,6 +25,12 @@ class FinancialAccount(Base, TenantMixin, TimestampMixin):
     __table_args__ = (
         Index("ix_financial_accounts_tenant_customer", "tenant_id", "customer_id"),
         Index("ix_financial_accounts_tenant_status", "tenant_id", "status"),
+        ForeignKeyConstraint(
+            ["customer_id", "tenant_id"],
+            ["customers.id", "customers.tenant_id"],
+            name="fk_financial_accounts_customer_tenant",
+            ondelete="RESTRICT",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -33,7 +40,6 @@ class FinancialAccount(Base, TenantMixin, TimestampMixin):
     )
     customer_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("customers.id", ondelete="RESTRICT"),
         nullable=False,
     )
     document: Mapped[str] = mapped_column(String(50), nullable=False)

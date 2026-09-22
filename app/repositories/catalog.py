@@ -15,6 +15,7 @@ Bloco 14 — Cache Redis (seção 53):
   com imagem em CDN externo mantêm a URL mesmo vindo do cache.
 - v5: soft delete — leituras filtram por is_deleted == False; produtos
   excluídos (is_deleted=True) somem da vitrine e do catálogo.
+- v6: normalized_sku incluído após a arquitetura canônica de integrações.
 """
 import json
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.context import TenantContext
+from app.integrations.contracts import normalize_sku
 from app.models import Category, Customer, CustomerPrice, PriceList, Product
 
 settings = get_settings()
@@ -37,10 +39,10 @@ CATALOG_CACHE_TTL = int(getattr(settings, "CATALOG_CACHE_TTL", 60))
 
 def _cache_key(tenant_id: UUID, kind: str, suffix: str = "") -> str:
     """Chave de cache sempre escopada por tenant (isolamento).
-    Versionada (v4) — garante que chaves antigas com formato diferente
+    Versionada (v6) — garante que chaves antigas com formato diferente
     (ex.: sem image_url na v3) sejam ignoradas após o deploy.
     """
-    return f"catalog:v4:{tenant_id}:{kind}:{suffix}"
+    return f"catalog:v6:{tenant_id}:{kind}:{suffix}"
 
 def _serialize_category(c: Category) -> dict:
     """Serializa TODOS os campos da categoria (reconstrução fiel no cache)."""
@@ -78,6 +80,7 @@ def _serialize_product(p: Product) -> dict:
         "id": str(p.id),
         "name": p.name,
         "sku": p.sku,
+        "normalized_sku": p.normalized_sku,
         "code": getattr(p, "code", None),
         "description": getattr(p, "description", None),
         "brand": getattr(p, "brand", None),
@@ -101,6 +104,7 @@ def _deserialize_product(data: dict) -> Product:
     p.id = UUID(data["id"])
     p.name = data["name"]
     p.sku = data["sku"]
+    p.normalized_sku = data.get("normalized_sku") or normalize_sku(p.sku)
     p.code = data.get("code")
     p.description = data.get("description")
     p.brand = data.get("brand")
@@ -136,12 +140,17 @@ async def _set_cached(key: str, value: list, ttl: int = CATALOG_CACHE_TTL) -> No
 async def _invalidate(tenant_id: UUID, kind: str) -> None:
     """Invalida o cache de um tipo para o tenant (escrita)."""
     try:
-        pattern = f"catalog:v4:{tenant_id}:{kind}:*"
+        pattern = f"catalog:v6:{tenant_id}:{kind}:*"
         keys = [k async for k in _redis.scan_iter(match=pattern)]
         if keys:
             await _redis.delete(*keys)
     except Exception:  # noqa: BLE001
         pass
+
+
+async def invalidate_product_cache(tenant_id: UUID) -> None:
+    """Invalida a visão de catálogo após escritas externas ao repositório."""
+    await _invalidate(tenant_id, "products")
 
 class CategoryRepository:
     def __init__(self, db: AsyncSession) -> None:
@@ -188,7 +197,10 @@ class ProductRepository:
         return TenantContext.tenant_id()
 
     async def create(self, data: dict) -> Product:
-        obj = Product(tenant_id=self._tenant(), **data)
+        values = dict(data)
+        values["sku"] = normalize_sku(values.get("sku"))
+        values["normalized_sku"] = values["sku"]
+        obj = Product(tenant_id=self._tenant(), **values)
         self.db.add(obj)
         await self.db.flush()
         await _invalidate(self._tenant(), "products")  # invalida cache
@@ -205,16 +217,18 @@ class ProductRepository:
         return result.scalars().first()
 
     async def get_by_sku(self, sku: str) -> Product | None:
-        """Busca produto pelo SKU exato (case-insensitive) do tenant.
-        Usa a unicidade uq_products_tenant_sku (seção 16) + filtro de tenant.
+        """Busca produto pela chave canônica de SKU dentro do tenant.
+
+        Usa a unicidade uq_products_tenant_normalized_sku + filtro de tenant.
         """
-        sku = (sku or "").strip()
-        if not sku:
+        try:
+            normalized_sku = normalize_sku(sku)
+        except ValueError:
             return None
         result = await self.db.execute(
             select(Product).where(
                 Product.tenant_id == self._tenant(),
-                func.lower(Product.sku) == sku.lower(),
+                Product.normalized_sku == normalized_sku,
                 Product.is_deleted == False,  # noqa: E712 — soft delete
             )
         )
@@ -239,7 +253,11 @@ class ProductRepository:
         return items
 
     async def update(self, product: Product, data: dict) -> Product:
-        for key, value in data.items():
+        values = dict(data)
+        if "sku" in values:
+            values["sku"] = normalize_sku(values["sku"])
+            values["normalized_sku"] = values["sku"]
+        for key, value in values.items():
             setattr(product, key, value)
         await self.db.flush()
         await _invalidate(self._tenant(), "products")  # invalida cache

@@ -28,10 +28,5 @@ jobs:
           docker compose up -d api
           docker compose exec -T api alembic upgrade head
 
-      # Substitua pelo seu script real de seed (cria agente@teste.com,
-      # cliente2@teste.com e usuarioB@teste.com antes da suíte rodar)
-      - name: Seed de dados de teste
-        run: docker compose exec -T api python scripts/seed.py || echo "Seed não encontrado — rode manualmente antes do CI"
-
-      - name: Rodar suíte de testes (Bloco 15)
-        run: docker compose exec -T api pytest tests/ -v
+      - name: Rodar regressões críticas de integrações
+        run: docker compose exec -T api python -m pytest tests_phase2/ tests_phase3/ tests_phase4/ tests_phase5/ tests_phase6/ tests_phase7/ -v

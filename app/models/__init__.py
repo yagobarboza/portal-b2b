@@ -20,7 +20,19 @@ from app.models.company import Company
 from app.models.customer import Customer
 from app.models.file import File
 from app.models.financial import FinancialAccount, FinancialPayment
-from app.models.integration import ERPIntegration, SyncExecution, WebhookEvent
+from app.models.integration import (
+    ERPIntegration,
+    ExternalEntityMapping,
+    IntegrationApiKey,
+    IntegrationConfiguration,
+    IntegrationCredential,
+    IntegrationImportFile,
+    IntegrationAlert,
+    IntegrationInbox,
+    IntegrationSchedule,
+    SyncExecution,
+    WebhookEvent,
+)
 from app.models.invitation import Invitation
 from app.models.notification import Notification
 from app.models.order import Order, OrderItem, OrderStatusHistory
@@ -43,10 +55,18 @@ __all__ = [
     "Customer",
     "CustomerPrice",
     "ERPIntegration",
+    "ExternalEntityMapping",
     "File",
     "FinancialAccount",
     "FinancialPayment",
     "Invitation",
+    "IntegrationApiKey",
+    "IntegrationConfiguration",
+    "IntegrationCredential",
+    "IntegrationImportFile",
+    "IntegrationAlert",
+    "IntegrationInbox",
+    "IntegrationSchedule",
     "Notification",
     "Order",
     "OrderItem",
