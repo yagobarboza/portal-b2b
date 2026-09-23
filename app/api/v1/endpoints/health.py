@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
@@ -45,16 +47,38 @@ async def _check_storage() -> str:
     endpoint = getattr(settings, "R2_ENDPOINT", "") or getattr(settings, "R2_ENDPOINT_URL", "")
     if not (bucket and endpoint):
         return "not_configured"
-    try:
+    access_key = getattr(settings, "R2_ACCESS_KEY_ID", "")
+    secret_key = getattr(settings, "R2_SECRET_ACCESS_KEY", "")
+    if not (access_key and secret_key):
+        return "misconfigured"
+
+    def check_bucket() -> None:
+        # boto3 e sincrono; nunca bloquear o event loop do FastAPI.
         import boto3
+        from botocore.config import Config
+
         s3 = boto3.client(
             "s3",
             endpoint_url=endpoint,
-            aws_access_key_id=getattr(settings, "R2_ACCESS_KEY_ID", ""),
-            aws_secret_access_key=getattr(settings, "R2_SECRET_ACCESS_KEY", ""),
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(
+                connect_timeout=settings.STORAGE_HEALTH_TIMEOUT_SECONDS,
+                read_timeout=settings.STORAGE_HEALTH_TIMEOUT_SECONDS,
+                retries={"max_attempts": 1},
+            ),
         )
         s3.head_bucket(Bucket=bucket)
+
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(check_bucket),
+            timeout=settings.STORAGE_HEALTH_TIMEOUT_SECONDS + 1,
+        )
         return "ok"
+    except TimeoutError:
+        logger.warning("health_check_storage_timeout")
+        return "error"
     except Exception:  # noqa: BLE001
         logger.exception("health_check_storage_failed")
         return "error"

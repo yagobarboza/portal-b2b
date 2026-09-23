@@ -23,10 +23,15 @@ jobs:
       - name: Construir imagem da API (com pytest)
         run: docker compose build api
 
-      - name: Subir API e aplicar migrations
+      - name: Aplicar migrations em processo exclusivo
         run: |
-          docker compose up -d api
-          docker compose exec -T api alembic upgrade head
+          docker compose run --rm api alembic upgrade head
+
+      - name: Subir API sem executar migrations no boot
+        run: docker compose up -d api
 
       - name: Rodar regressões críticas de integrações
         run: docker compose exec -T api python -m pytest tests_phase2/ tests_phase3/ tests_phase4/ tests_phase5/ tests_phase6/ tests_phase7/ -v
+
+      - name: Validar imagem final de produção
+        run: docker build --target runtime -t portal-b2b-runtime:${{ github.sha }} .

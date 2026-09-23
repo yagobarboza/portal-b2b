@@ -1,8 +1,7 @@
-"""Agendador de tarefas periódicas (APScheduler).
+"""Agendador legado para desenvolvimento local (APScheduler).
 
-Roda dentro do processo da API (uvicorn). O job diário de bloqueio por
-não pagamento dispara todos os dias às 03:00 (America/Sao_Paulo).
-Integrado ao app via `lifespan` no create_app() (app/main.py).
+So roda quando ``API_SCHEDULER_ENABLED=true``. Em produção, o processo
+``worker.scheduler`` executa as tarefas periódicas fora da API.
 
 ✅ async_session_factory — confirmado em app/database/session.py.
 """
@@ -54,6 +53,12 @@ def shutdown_scheduler() -> None:
 @asynccontextmanager
 async def scheduler_lifespan(app):
     """Lifespan que liga/desliga o scheduler junto com a API."""
+    from app.core.config import get_settings
+
+    if not get_settings().API_SCHEDULER_ENABLED:
+        logger.info("Scheduler da API desabilitado; use worker.scheduler.")
+        yield
+        return
     start_scheduler()
     try:
         yield

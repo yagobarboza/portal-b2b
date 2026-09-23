@@ -11,7 +11,7 @@ from app.core.http_security import add_cors, add_security_middleware
 from app.core.logging import get_logger, setup_logging
 from app.core.monitoring import init_sentry, setup_metrics
 from app.core.rate_limit import limiter
-from app.core.scheduler import scheduler_lifespan  # ✅ job diário de bloqueio
+from app.core.scheduler import scheduler_lifespan
 from app.middleware.request_context import RequestContextMiddleware
 
 # Logs estruturados desde o boot da aplicação
@@ -29,7 +29,7 @@ def create_app() -> FastAPI:
         debug=settings.APP_DEBUG,
         docs_url="/docs" if settings.APP_ENV != "production" else None,
         redoc_url="/redoc" if settings.APP_ENV != "production" else None,
-        lifespan=scheduler_lifespan,  # ✅ inicia job diário 03:00 BRT + encerra no shutdown
+        lifespan=scheduler_lifespan,
     )
 
     # CORS restrito (seção 67) — via app/core/http_security.py

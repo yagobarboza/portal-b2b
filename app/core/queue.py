@@ -7,13 +7,12 @@ Fail-open: se o Redis estiver fora, registra log e NÃO derruba o request.
 import logging
 
 from arq import create_pool
-from arq.connections import RedisSettings
-
 from app.core.config import get_settings
+from app.core.redis_settings import arq_redis_settings
 
 logger = logging.getLogger(__name__)
 
-_redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
+_redis_settings = arq_redis_settings(get_settings())
 
 async def enqueue_job(function: str, *args, **kwargs) -> bool:
     """Enfileira um job no Redis. Retorna True se enfileirou.

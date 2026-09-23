@@ -12,8 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# ---------- Estágio final ----------
-FROM python:3.11.9-slim
+# ---------- Base de execução ----------
+FROM python:3.11.9-slim AS runtime-base
 
 WORKDIR /app
 
@@ -31,25 +31,33 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 # Copia as dependências instaladas do estágio builder
 COPY --from=builder /install /usr/local
 
-# Copia o código da aplicação (agora inclui o Alembic — necessário em produção)
-COPY app ./app
-COPY worker ./worker
-COPY alembic ./alembic
-COPY alembic.ini ./alembic.ini
-COPY pytest.ini ./pytest.ini
-COPY tests_phase2 ./tests_phase2
-COPY tests_phase3 ./tests_phase3
-COPY tests_phase4 ./tests_phase4
-COPY tests_phase5 ./tests_phase5
-COPY tests_phase6 ./tests_phase6
-COPY tests_phase7 ./tests_phase7
-
-# Permissões para o usuário não-root
-RUN chown -R appuser:appuser /app
+# Copia somente o necessario para API, workers e migration job.
+COPY --chown=appuser:appuser app ./app
+COPY --chown=appuser:appuser worker ./worker
+COPY --chown=appuser:appuser alembic ./alembic
+COPY --chown=appuser:appuser alembic.ini ./alembic.ini
+RUN chown appuser:appuser /app
 
 USER appuser
 
-EXPOSE 8000 9100
+EXPOSE 8080
 
-# Comando padrão (pode ser sobrescrito pelo compose para o worker)
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# ---------- Imagem de testes (usada pelo docker compose/CI) ----------
+FROM runtime-base AS test
+
+USER root
+COPY --chown=appuser:appuser pytest.ini ./pytest.ini
+COPY --chown=appuser:appuser tests_phase2 ./tests_phase2
+COPY --chown=appuser:appuser tests_phase3 ./tests_phase3
+COPY --chown=appuser:appuser tests_phase4 ./tests_phase4
+COPY --chown=appuser:appuser tests_phase5 ./tests_phase5
+COPY --chown=appuser:appuser tests_phase6 ./tests_phase6
+COPY --chown=appuser:appuser tests_phase7 ./tests_phase7
+USER appuser
+
+# ---------- Imagem final de produção ----------
+FROM runtime-base AS runtime
+
+# Migrações são executadas por um Cloud Run Job dedicado. Nunca migre em
+# paralelo durante o boot de cada réplica da API.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --proxy-headers --forwarded-allow-ips='*'"]

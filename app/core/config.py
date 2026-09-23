@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_URL: str = ""
+    # Para Redis com TLS (rediss://), permite montar a CA do provedor sem
+    # desabilitar a verificacao de certificado.
+    REDIS_SSL_CA_CERTS: str = ""
+    REDIS_SSL_CHECK_HOSTNAME: bool = True
+    REDIS_MAX_CONNECTIONS: int = 20
 
     # ===== WEBHOOKS (seção 31) =====
     WEBHOOK_RATE_LIMIT: int = 60      # eventos/minuto por integração
@@ -116,9 +121,15 @@ class Settings(BaseSettings):
     INTEGRATION_STALE_SUCCESS_HOURS: int = 24
     WORKER_METRICS_PORT: int = 9100
 
+    # O scheduler embutido existe apenas para desenvolvimento/legado. Em
+    # producao, tarefas periodicas rodam no processo worker.scheduler para que
+    # escalar a API nao duplique execucoes.
+    API_SCHEDULER_ENABLED: bool = False
+    STORAGE_HEALTH_TIMEOUT_SECONDS: float = 3.0
+
     # ===== POOL DE CONEXÕES (Bloco 14 — seção 54) =====
-    DB_POOL_SIZE: int = 10
-    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 5
     DB_POOL_RECYCLE: int = 1800  # segundos
 
     # ===== CACHE CATÁLOGO (Bloco 14 — seção 53) =====
@@ -134,6 +145,12 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _validate_production_integration_key(self):
         if self.APP_ENV.lower() == "production":
+            if self.ENVIRONMENT.lower() != "production":
+                raise ValueError(
+                    "ENVIRONMENT deve ser production quando APP_ENV=production."
+                )
+            if self.APP_DEBUG:
+                raise ValueError("APP_DEBUG deve ser false em producao.")
             if not self.INTEGRATION_ENCRYPTION_KEY:
                 raise ValueError(
                     "INTEGRATION_ENCRYPTION_KEY é obrigatória em produção."
@@ -141,6 +158,55 @@ class Settings(BaseSettings):
             if self.INTEGRATION_ENCRYPTION_KEY == self.SECRET_KEY:
                 raise ValueError(
                     "INTEGRATION_ENCRYPTION_KEY deve ser diferente de SECRET_KEY."
+                )
+            if self.API_SCHEDULER_ENABLED:
+                raise ValueError(
+                    "API_SCHEDULER_ENABLED deve ser false em producao; "
+                    "use o processo worker.scheduler dedicado."
+                )
+            if not self.COOKIE_SECURE:
+                raise ValueError("COOKIE_SECURE deve ser true em producao.")
+            if not self.COOKIE_HTTPONLY:
+                raise ValueError("COOKIE_HTTPONLY deve ser true em producao.")
+            if self.COOKIE_SAMESITE.lower() not in {"lax", "strict", "none"}:
+                raise ValueError("COOKIE_SAMESITE possui valor invalido.")
+            if len(self.SECRET_KEY) < 32 or "change-me" in self.SECRET_KEY.lower():
+                raise ValueError(
+                    "SECRET_KEY deve ter ao menos 32 caracteres aleatorios em producao."
+                )
+            if (
+                len(self.INTEGRATION_ENCRYPTION_KEY) < 32
+                or "change-me" in self.INTEGRATION_ENCRYPTION_KEY.lower()
+            ):
+                raise ValueError(
+                    "INTEGRATION_ENCRYPTION_KEY deve ter ao menos 32 caracteres "
+                    "aleatorios em producao."
+                )
+            unsafe_origins = {
+                origin.lower().rstrip("/") for origin in self.cors_origins_list
+            }
+            if "*" in unsafe_origins or any(
+                "localhost" in origin or "127.0.0.1" in origin
+                for origin in unsafe_origins
+            ):
+                raise ValueError(
+                    "CORS_ORIGINS nao pode conter wildcard ou localhost em producao."
+                )
+            if not unsafe_origins or any(
+                not origin.startswith("https://") for origin in unsafe_origins
+            ):
+                raise ValueError(
+                    "CORS_ORIGINS deve conter apenas origens HTTPS em producao."
+                )
+            if not self.DATABASE_URL:
+                raise ValueError("DATABASE_URL e obrigatoria em producao.")
+            if not self.REDIS_URL or not self.REDIS_URL.startswith(
+                ("redis://", "rediss://")
+            ):
+                raise ValueError("REDIS_URL valida e obrigatoria em producao.")
+            if not self.FRONTEND_BASE_URL.startswith("https://"):
+                raise ValueError(
+                    "FRONTEND_BASE_URL deve usar HTTPS em producao."
                 )
         return self
 

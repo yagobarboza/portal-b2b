@@ -40,6 +40,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: test
     container_name: portal_api
     restart: unless-stopped
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -65,6 +66,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: test
     container_name: portal_worker
     restart: unless-stopped
     command: python -m worker.main
@@ -75,6 +77,31 @@ services:
       - ./worker:/app/worker
     ports:
       - "9100:9100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - portal_net
+
+  # Perfil opcional: em produção o scheduler é um serviço separado. Localmente
+  # a API pode continuar com API_SCHEDULER_ENABLED=true; não execute ambos.
+  scheduler:
+    profiles: ["scheduler"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: portal_scheduler
+    restart: unless-stopped
+    command: python -m worker.scheduler
+    env_file:
+      - .env
+    environment:
+      API_SCHEDULER_ENABLED: "false"
+    ports:
+      - "9101:9100"
     depends_on:
       postgres:
         condition: service_healthy

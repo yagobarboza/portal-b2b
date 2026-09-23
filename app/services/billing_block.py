@@ -4,7 +4,7 @@ Se a empresa tem uma mensalidade VENCIDA (overdue) há mais de
 BILLING_GRACE_DAYS (30 dias) após o vencimento, ela é inativada.
 
 ⚠️ Este serviço deve ser executado por um JOB PERIÓDICO (diário) —
-ex.: APScheduler no container da API (app/core/scheduler.py).
+ex.: scheduler dedicado (worker/scheduler.py).
 
 Idempotente e deduplicado:
 - Só inativa empresas com status ATIVO (pula as já inativas);

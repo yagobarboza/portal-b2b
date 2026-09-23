@@ -1,7 +1,8 @@
 services:
+  # Configuracao legada, mantida apenas para referencia durante a migracao ao
+  # Google Cloud. Auto deploy desativado para nao publicar uma arquitetura sem
+  # migration job e scheduler dedicados.
   # ===== API (Web) =====
-  # ÚNICO serviço que roda as migrações (alembic upgrade head) no start.
-  # Nunca rode migração no worker — evita corrida entre 2 processos.
   - type: web
     name: portal-b2b-api
     runtime: docker
@@ -10,13 +11,15 @@ services:
     branch: master            # ← corrigido (era "main", que não existe)
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/v1/health/live
-    autoDeploy: true
+    autoDeploy: false
     envVars:
       - key: APP_ENV
         value: production
       - key: ENVIRONMENT
         value: production
       - key: APP_DEBUG
+        value: "false"
+      - key: API_SCHEDULER_ENABLED
         value: "false"
       - key: COOKIE_SECURE
         value: "true"
@@ -29,6 +32,8 @@ services:
       - key: INTEGRATION_ENCRYPTION_KEY
         sync: false
       - key: CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_BASE_URL
         sync: false
       - key: R2_ACCOUNT_ID
         sync: false
@@ -53,7 +58,7 @@ services:
 
   # ===== Worker (Background) =====
   # Processo separado que consome as filas do Redis (jobs em background).
-  # startCommand só roda o worker — NÃO roda migração (a API já fez).
+  # startCommand roda apenas o consumidor. Cron jobs exigem worker.scheduler.
   - type: worker
     name: portal-b2b-worker
     runtime: docker
@@ -61,7 +66,7 @@ services:
     plan: free
     branch: master            # ← corrigido (era "main")
     dockerfilePath: ./Dockerfile
-    autoDeploy: true
+    autoDeploy: false
     startCommand: python -m worker.main
     envVars:
       - key: APP_ENV
@@ -70,6 +75,14 @@ services:
         value: production
       - key: APP_DEBUG
         value: "false"
+      - key: API_SCHEDULER_ENABLED
+        value: "false"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_BASE_URL
+        sync: false
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
