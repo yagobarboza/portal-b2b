@@ -4,12 +4,15 @@ from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field
 
+
 class CompanyCreateRequest(BaseModel):
     """Criação de empresa pelo Super Admin + convite do admin."""
     name: str = Field(..., min_length=2, max_length=255)
     cnpj: str = Field(..., min_length=14, max_length=18)
     slug: str = Field(..., min_length=2, max_length=80, pattern=r"^[a-z0-9-]+$")
     domain: str | None = Field(None, max_length=255)
+    logo_url: str | None = Field(None, max_length=512)
+    favicon_url: str | None = Field(None, max_length=512)
     primary_color: str | None = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
     secondary_color: str | None = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
     admin_email: EmailStr

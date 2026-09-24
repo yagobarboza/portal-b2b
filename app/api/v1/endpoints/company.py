@@ -10,14 +10,14 @@ GET  /companies/purchase-rules  — empresa (staff) lê as próprias regras de c
 PATCH /companies/purchase-rules — empresa (staff) atualiza as próprias regras de compra.
 Usa o TenantContext (sessão autenticada) — nunca confia em domínio/ID vindo do front.
 Rate limit do by-domain via Redis (Bloco 17) — funciona com múltiplas instâncias.
-E-mail de convite: enviado via BackgroundTasks (o worker ARQ não roda no Render).
+E-mail de convite: enviado pelo worker ARQ após a transação principal.
 """
-from datetime import datetime, timezone
 from uuid import UUID
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
-from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.deps import get_current_user, require_permission
 from app.core.config import get_settings
 from app.core.context import TenantContext
@@ -29,25 +29,19 @@ from app.core.exceptions import (
 )
 from app.core.invitations import compute_expires_at, generate_invite_token
 from app.core.permissions import COMPANY_MANAGE
+from app.core.queue import enqueue_job
 from app.core.rate_limit import check_rate_limit
 from app.core.tokens import revoke_all_sessions
 from app.database.session import get_db
 from app.models import Permission, User
-from app.models.catalog import Catalog, Category, PriceList, Product
-from app.models.company import Company
-from app.models.customer import Customer
 from app.models.enums import (
     CompanyStatus,
-    CustomerStatus,
-    OrderStatus,
-    ProductStatus,
     UserStatus,
 )
-from app.models.invitation import Invitation, InvitationStatus
-from app.models.order import Order
 from app.models.rbac import Role, role_permissions
 from app.repositories.company import CompanyRepository
 from app.repositories.invitation import InvitationRepository
+from app.repositories.user import UserRepository
 from app.schemas.company import (
     CompanyBranding,
     CompanyPage,
@@ -59,7 +53,6 @@ from app.schemas.company import (
 )
 from app.schemas.invitation import CompanyCreateRequest
 from app.services.audit import record_audit
-from app.services.email import send_company_status_email, send_invite_email
 from app.services.rbac import ROLE_DEFINITIONS
 
 router = APIRouter(prefix="/companies", tags=["Companies"])
@@ -183,8 +176,6 @@ async def get_branding(
 @router.post("", status_code=201)
 async def create_company_with_admin(
     body: CompanyCreateRequest,
-    request: Request,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_permission(COMPANY_MANAGE)),
 ) -> dict:
@@ -201,6 +192,8 @@ async def create_company_with_admin(
         raise ValidationFailedError(
             "Já existe uma empresa com este slug, domínio ou CNPJ."
         )
+    if await UserRepository(db).get_by_email(body.admin_email):
+        raise ValidationFailedError("Este e-mail já possui cadastro.")
     # 2) Cria a empresa
     company = await repo.create_with_tenant(
         name=body.name,
@@ -211,8 +204,6 @@ async def create_company_with_admin(
         secondary_color=body.secondary_color,
         logo_url=body.logo_url,
         favicon_url=body.favicon_url,
-        admin_email=body.admin_email,
-        admin_full_name=body.admin_full_name,
     )
     # 3) Cria as roles padrão do tenant
     await db.execute(
@@ -252,49 +243,45 @@ async def create_company_with_admin(
                     role_id=role.id, permission_id=perm.id
                 )
             )
-    # 5) Cria o usuário admin (status inactive até aceitar o convite)
-    admin = User(
+    # 5) Convite: o usuário só é criado ao definir a própria senha.
+    token = generate_invite_token()
+    expires_at = compute_expires_at()
+    invitation = await InvitationRepository(db).create(
         tenant_id=company.id,
         email=body.admin_email,
         full_name=body.admin_full_name,
-        status=UserStatus.INACTIVE,
-    )
-    db.add(admin)
-    await db.flush()
-    await db.execute(
-        user_roles.insert().values(
-            user_id=admin.id, role_id=next(r.id for r in roles if r.slug == "admin")
-        )
-    )
-    # 6) Convite + e-mail em background
-    token = generate_invite_token()
-    expires_at = compute_expires_at()
-    db.add(
-        Invitation(
-            tenant_id=company.id,
-            email=body.admin_email,
-            full_name=body.admin_full_name,
-            role_slug="admin",
-            token=token,
-            expires_at=expires_at,
-            status=InvitationStatus.PENDING,
-        )
+        role_slug="admin",
+        token=token,
+        expires_at=expires_at,
+        invited_by=user.id,
     )
     await record_audit(
         db, action="create", entity="company",
         entity_id=company.id, user_id=user.id, tenant_id=company.id,
     )
     await db.commit()
-    background_tasks.add_task(
-        send_invite_email,
-        company.id,
-        body.admin_email,
-        body.admin_full_name,
-        token,
-        expires_at,
-        body.admin_full_name,
+    settings = get_settings()
+    base_url = (
+        f"https://{company.domain}"
+        if company.domain
+        else settings.FRONTEND_BASE_URL.rstrip("/")
     )
-    return {"id": company.id, "name": company.name, "slug": company.slug, "status": "active"}
+    invite_url = f"{base_url}/accept-invite?token={token}"
+    queued = await enqueue_job(
+        "send_invite_email_job",
+        to_email=body.admin_email,
+        invite_url=invite_url,
+        company_name=company.name,
+        expires_hours=settings.INVITE_TOKEN_EXPIRE_HOURS,
+    )
+    return {
+        "id": company.id,
+        "name": company.name,
+        "slug": company.slug,
+        "status": "active",
+        "invitation_id": invitation.id,
+        "invite_queued": queued,
+    }
 
 
 @router.patch("/{company_id}/status", response_model=CompanyRead)
@@ -313,7 +300,6 @@ async def update_company_status(
         raise NotFoundError("Empresa não encontrada.")
     new_status = body.status
     company.status = CompanyStatus(new_status)
-    now = datetime.now(timezone.utc)
     if new_status == "inactive":
         # Usuários do tenant → inativos + sessões revogadas
         users = (

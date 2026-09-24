@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.company import Company
 from app.models.enums import CompanyStatus
 
+
 class CompanyRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -50,6 +51,65 @@ class CompanyRepository:
         )
         result = await self.db.execute(stmt)
         return result.scalars().first()
+
+    async def find_by_slug_or_domain_or_cnpj(
+        self,
+        slug: str | None,
+        domain: str | None,
+        cnpj: str | None,
+    ) -> Company | None:
+        """Busca conflitos dos identificadores únicos da empresa."""
+        conditions = []
+        if slug:
+            conditions.append(func.lower(Company.slug) == slug.strip().lower())
+        if domain:
+            conditions.append(func.lower(Company.domain) == domain.strip().lower())
+        if cnpj:
+            digits = re.sub(r"\D", "", cnpj)
+            if digits:
+                normalized_cnpj = func.replace(
+                    func.replace(
+                        func.replace(
+                            func.replace(Company.cnpj, ".", ""), "/", ""
+                        ),
+                        "-",
+                        "",
+                    ),
+                    " ",
+                    "",
+                )
+                conditions.append(normalized_cnpj == digits)
+        if not conditions:
+            return None
+        result = await self.db.execute(select(Company).where(or_(*conditions)))
+        return result.scalars().first()
+
+    async def create_with_tenant(
+        self,
+        *,
+        name: str,
+        cnpj: str,
+        slug: str,
+        domain: str | None,
+        primary_color: str | None,
+        secondary_color: str | None,
+        logo_url: str | None,
+        favicon_url: str | None,
+    ) -> Company:
+        """Cria a raiz do tenant e materializa seu UUID antes do RBAC."""
+        company = Company(
+            name=name.strip(),
+            cnpj=cnpj.strip(),
+            slug=slug.strip().lower(),
+            domain=domain.strip().lower() if domain and domain.strip() else None,
+            primary_color=primary_color,
+            secondary_color=secondary_color,
+            logo_url=logo_url,
+            favicon_url=favicon_url,
+        )
+        self.db.add(company)
+        await self.db.flush()
+        return company
 
     async def set_status(
         self, company: Company, status: CompanyStatus
