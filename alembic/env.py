@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.config import get_settings
 from app.database.base import Base
+from app.database.alembic_url import escape_alembic_url
 
 # Importa TODOS os modelos para o Alembic detectar as tabelas
 from app import models  # noqa: F401
@@ -18,7 +19,10 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Sobrescreve a URL do banco com a do .env (seção 42: secrets fora do código)
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+config.set_main_option(
+    "sqlalchemy.url",
+    escape_alembic_url(get_settings().database_url),
+)
 
 target_metadata = Base.metadata
 

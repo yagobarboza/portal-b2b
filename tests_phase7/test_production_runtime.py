@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from alembic.config import Config
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.database.alembic_url import escape_alembic_url
 from app.core.redis_settings import arq_redis_settings, redis_client_kwargs
 from worker.runtime import metrics_port
 
@@ -72,3 +74,13 @@ def test_redis_tls_ca_is_shared_by_api_and_arq() -> None:
 def test_worker_prefers_cloud_run_port(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PORT", "8080")
     assert metrics_port() == 8080
+
+
+def test_alembic_accepts_percent_encoded_database_password() -> None:
+    database_url = (
+        "postgresql+asyncpg://portal_app:NydB2%40secret@10.30.0.3:5432/portal_b2b"
+    )
+    config = Config()
+    config.set_main_option("sqlalchemy.url", escape_alembic_url(database_url))
+
+    assert config.get_main_option("sqlalchemy.url") == database_url
