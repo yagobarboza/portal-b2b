@@ -9,7 +9,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Preparar .env
         run: |
@@ -56,7 +56,7 @@ jobs:
       DEPLOYER_SA: portal-github-deployer@project-2295f6f0-ccd8-4a77-96f.iam.gserviceaccount.com
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Autenticar no Google Cloud sem chave estática
         uses: google-github-actions/auth@v3
@@ -69,7 +69,12 @@ jobs:
         uses: google-github-actions/setup-gcloud@v3
 
       - name: Construir e publicar imagem imutável
-        run: gcloud builds submit --project="$PROJECT_ID" --tag="$IMAGE" .
+        run: |
+          gcloud builds submit \
+            --project="$PROJECT_ID" \
+            --tag="$IMAGE" \
+            --suppress-logs \
+            .
 
       - name: Aplicar migrações antes da nova versão
         run: |
