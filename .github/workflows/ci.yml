@@ -70,6 +70,14 @@ jobs:
 
       - name: Construir e publicar imagem imutável
         run: |
+          if gcloud artifacts docker images describe "$IMAGE" \
+            --project="$PROJECT_ID" \
+            --format='value(image_summary.digest)' \
+            >/dev/null 2>&1; then
+            echo "A imagem imutável deste commit já existe; reutilizando $IMAGE."
+            exit 0
+          fi
+
           BUILD_ID="$(gcloud builds submit \
             --project="$PROJECT_ID" \
             --tag="$IMAGE" \
