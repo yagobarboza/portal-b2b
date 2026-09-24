@@ -70,11 +70,38 @@ jobs:
 
       - name: Construir e publicar imagem imutável
         run: |
-          gcloud builds submit \
+          BUILD_ID="$(gcloud builds submit \
             --project="$PROJECT_ID" \
             --tag="$IMAGE" \
-            --suppress-logs \
-            .
+            --async \
+            --format='value(id)' \
+            .)"
+
+          if [ -z "$BUILD_ID" ]; then
+            echo "Cloud Build não retornou um identificador." >&2
+            exit 1
+          fi
+
+          echo "Cloud Build: $BUILD_ID"
+          while true; do
+            STATUS="$(gcloud builds describe "$BUILD_ID" \
+              --project="$PROJECT_ID" \
+              --format='value(status)')"
+            echo "Status: $STATUS"
+
+            case "$STATUS" in
+              SUCCESS)
+                break
+                ;;
+              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
+                echo "Cloud Build terminou com status $STATUS." >&2
+                echo "https://console.cloud.google.com/cloud-build/builds/$BUILD_ID?project=$PROJECT_ID" >&2
+                exit 1
+                ;;
+            esac
+
+            sleep 10
+          done
 
       - name: Aplicar migrações antes da nova versão
         run: |
