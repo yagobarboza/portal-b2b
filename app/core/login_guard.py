@@ -4,19 +4,20 @@ Registra tentativas falhas por e-mail/IP no Redis e aplica
 bloqueio progressivo: quanto mais falhas, maior o tempo de
 bloqueio. Mensagens ao cliente são sempre genéricas.
 """
-import redis.asyncio as aioredis
+from redis.asyncio import Redis
 
 from app.core.config import get_settings
+from app.core.redis_settings import create_redis_client
 
 settings = get_settings()
 
-_redis: aioredis.Redis | None = None
+_redis: Redis | None = None
 
-def _get_redis() -> aioredis.Redis:
+def _get_redis() -> Redis:
     """Cliente Redis do guard (lazy, compartilhado)."""
     global _redis
     if _redis is None:
-        _redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+        _redis = create_redis_client(settings)
     return _redis
 
 def _counter_key(email: str | None, ip: str | None) -> str:

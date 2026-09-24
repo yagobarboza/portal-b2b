@@ -4,11 +4,10 @@
   (evita derrubar o fluxo de pagamento por infraestrutura).
 - Idempotência: o mesmo evento + resource id só é processado uma vez.
 """
-import aioredis
-
 from app.core.config import get_settings
+from app.core.redis_settings import create_redis_client
 
-redis_client = aioredis.from_url(get_settings().redis_url, decode_responses=True)
+redis_client = create_redis_client(get_settings())
 
 # Limite de eventos/minuto do webhook Asaas.
 ASAAS_RATE_LIMIT_PER_MINUTE = 120

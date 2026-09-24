@@ -3,6 +3,7 @@
 from typing import Any
 
 from arq.connections import RedisSettings
+from redis.asyncio import Redis
 
 from app.core.config import Settings, get_settings
 
@@ -28,6 +29,16 @@ def redis_client_kwargs(settings: Settings | None = None) -> dict[str, Any]:
         if cfg.REDIS_SSL_CA_CERTS:
             kwargs["ssl_ca_certs"] = cfg.REDIS_SSL_CA_CERTS
     return kwargs
+
+
+def create_redis_client(settings: Settings | None = None) -> Redis:
+    """Cria um cliente assíncrono com a configuração Redis canônica.
+
+    Todos os consumidores da API devem usar esta fábrica para que conexões
+    ``rediss://`` sempre recebam a CA e a política de validação configuradas.
+    """
+    cfg = settings or get_settings()
+    return Redis.from_url(cfg.redis_url, **redis_client_kwargs(cfg))
 
 
 def arq_redis_settings(settings: Settings | None = None) -> RedisSettings:

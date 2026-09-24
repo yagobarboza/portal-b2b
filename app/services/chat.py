@@ -12,16 +12,16 @@
 import json
 from uuid import UUID
 
-import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.exceptions import ForbiddenError, NotFoundError
+from app.core.redis_settings import create_redis_client
 from app.models import ChatMessage, ChatRoom, User
 from app.repositories.chat import ChatRepository
 
 settings = get_settings()
-redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+redis_client = create_redis_client(settings)
 
 async def get_chat_room_for_user(
     db: AsyncSession, user: User, room_id: UUID

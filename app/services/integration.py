@@ -14,13 +14,13 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
-import redis.asyncio as aioredis
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.crypto import decrypt_str
+from app.core.redis_settings import create_redis_client
 from app.integrations.adapters import MappingProductAdapter
 from app.models import Customer, FinancialAccount
 from app.models.enums import FinancialAccountStatus, SyncStatus
@@ -28,7 +28,7 @@ from app.services.product_sync import ProductSyncService
 from app.services.stock_sync import apply_stock_sync, parse_stock_records
 
 settings = get_settings()
-redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+redis_client = create_redis_client(settings)
 
 # ---------- Assinatura / replay / rate limit (seção 31) ----------
 def generate_webhook_secret() -> str:

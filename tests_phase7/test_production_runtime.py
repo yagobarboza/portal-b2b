@@ -8,7 +8,11 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.logging import SENSITIVE_DEPENDENCY_LOGGERS, setup_logging
-from app.core.redis_settings import arq_redis_settings, redis_client_kwargs
+from app.core.redis_settings import (
+    arq_redis_settings,
+    create_redis_client,
+    redis_client_kwargs,
+)
 from app.database.alembic_url import escape_alembic_url
 from worker.runtime import metrics_port
 
@@ -72,6 +76,30 @@ def test_redis_tls_ca_is_shared_by_api_and_arq() -> None:
     assert worker.ssl is True
     assert worker.ssl_ca_certs == "/var/run/secrets/redis/ca.pem"
     assert worker.database == 1
+
+
+def test_redis_client_factory_applies_tls_ca(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = production_settings(
+        REDIS_URL="rediss://user:secret@redis.example.com:6380/1",
+        REDIS_SSL_CA_CERTS="/var/run/secrets/redis/ca.pem",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_from_url(url: str, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "app.core.redis_settings.Redis.from_url",
+        fake_from_url,
+    )
+
+    create_redis_client(settings)
+
+    assert captured["ssl_cert_reqs"] == "required"
+    assert captured["ssl_check_hostname"] is True
+    assert captured["ssl_ca_certs"] == "/var/run/secrets/redis/ca.pem"
 
 
 def test_worker_prefers_cloud_run_port(monkeypatch: pytest.MonkeyPatch) -> None:

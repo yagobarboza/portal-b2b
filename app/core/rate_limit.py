@@ -12,11 +12,11 @@
 """
 import logging
 
-import redis.asyncio as aioredis
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.core.config import get_settings
+from app.core.redis_settings import create_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 limiter = Limiter(key_func=get_remote_address)
 
 # ===== Rate limit distribuído via Redis (Bloco 17) =====
-_redis = aioredis.from_url(get_settings().redis_url, decode_responses=True)
+_redis = create_redis_client(get_settings())
 
 # ===== Limites do webhook do Asaas =====
 # Eventos por minuto aceitos no webhook do Asaas.

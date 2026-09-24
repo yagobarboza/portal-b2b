@@ -22,17 +22,17 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-import redis.asyncio as aioredis
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.context import TenantContext
+from app.core.redis_settings import create_redis_client
 from app.integrations.contracts import normalize_sku
 from app.models import Category, Customer, CustomerPrice, PriceList, Product
 
 settings = get_settings()
-_redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+_redis = create_redis_client(settings)
 
 # TTL do cache do catálogo (segundos)
 CATALOG_CACHE_TTL = int(getattr(settings, "CATALOG_CACHE_TTL", 60))

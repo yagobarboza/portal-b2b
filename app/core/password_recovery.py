@@ -7,20 +7,21 @@
 import secrets
 from uuid import UUID
 
-import redis.asyncio as aioredis
+from redis.asyncio import Redis
 
 from app.core.config import get_settings
+from app.core.redis_settings import create_redis_client
 
 settings = get_settings()
 
-_redis: aioredis.Redis | None = None
+_redis: Redis | None = None
 
 RESET_TTL_SECONDS = 3600  # 1 hora
 
-def _get_redis() -> aioredis.Redis:
+def _get_redis() -> Redis:
     global _redis
     if _redis is None:
-        _redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+        _redis = create_redis_client(settings)
     return _redis
 
 async def create_reset_token(user_id: UUID) -> str:
