@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 from alembic.config import Config
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.database.alembic_url import escape_alembic_url
+from app.core.logging import SENSITIVE_DEPENDENCY_LOGGERS, setup_logging
 from app.core.redis_settings import arq_redis_settings, redis_client_kwargs
+from app.database.alembic_url import escape_alembic_url
 from worker.runtime import metrics_port
 
 
@@ -84,3 +87,10 @@ def test_alembic_accepts_percent_encoded_database_password() -> None:
     config.set_main_option("sqlalchemy.url", escape_alembic_url(database_url))
 
     assert config.get_main_option("sqlalchemy.url") == database_url
+
+
+def test_sensitive_sdk_debug_logs_are_suppressed() -> None:
+    setup_logging()
+
+    for logger_name in SENSITIVE_DEPENDENCY_LOGGERS:
+        assert logging.getLogger(logger_name).getEffectiveLevel() >= logging.WARNING

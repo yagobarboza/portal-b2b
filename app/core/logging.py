@@ -16,6 +16,13 @@ from app.core.redaction import structlog_redactor
 
 settings = get_settings()
 
+SENSITIVE_DEPENDENCY_LOGGERS = (
+    "boto3",
+    "botocore",
+    "s3transfer",
+    "urllib3",
+)
+
 # Processadores compartilhados
 SHARED_PROCESSORS: list[Any] = [
     structlog.contextvars.merge_contextvars,
@@ -28,6 +35,7 @@ SHARED_PROCESSORS: list[Any] = [
 
 def setup_logging() -> None:
     """Configura structlog + logging padrão (uma única vez)."""
+    log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
     structlog.configure(
         processors=[
             *SHARED_PROCESSORS,
@@ -38,9 +46,7 @@ def setup_logging() -> None:
                 else structlog.dev.ConsoleRenderer()
             ),
         ],
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(log_level),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
@@ -50,9 +56,16 @@ def setup_logging() -> None:
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stdout,
-        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+        level=log_level,
     )
-    structlog.stdlib.recreate_defaults()
+    logging.getLogger().setLevel(log_level)
+
+    # SDKs HTTP podem incluir identificadores de credencial, assinaturas e
+    # headers nos eventos DEBUG. Nunca permita esse nível em produção, mesmo
+    # que uma biblioteca tenha configurado seu logger antes da aplicação.
+    dependency_level = max(log_level, logging.WARNING)
+    for logger_name in SENSITIVE_DEPENDENCY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(dependency_level)
 
 def get_logger(name: str):
     """Retorna um logger structlog com o serviço identificado."""
