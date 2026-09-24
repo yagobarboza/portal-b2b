@@ -35,3 +35,66 @@ jobs:
 
       - name: Validar imagem final de produção
         run: docker build --target runtime -t portal-b2b-runtime:${{ github.sha }} .
+
+  deploy-production:
+    name: Deploy — Google Cloud
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: portal-b2b-backend-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: project-2295f6f0-ccd8-4a77-96f
+      REGION: southamerica-east1
+      IMAGE: southamerica-east1-docker.pkg.dev/project-2295f6f0-ccd8-4a77-96f/portal-b2b-images/backend:${{ github.sha }}
+      WIF_PROVIDER: projects/702576245812/locations/global/workloadIdentityPools/github-actions/providers/github-provider
+      DEPLOYER_SA: portal-github-deployer@project-2295f6f0-ccd8-4a77-96f.iam.gserviceaccount.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Autenticar no Google Cloud sem chave estática
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - name: Configurar Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Construir e publicar imagem imutável
+        run: gcloud builds submit --project="$PROJECT_ID" --tag="$IMAGE" .
+
+      - name: Aplicar migrações antes da nova versão
+        run: |
+          gcloud run jobs update portal-b2b-migrate \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --image="$IMAGE" \
+            --quiet
+          gcloud run jobs execute portal-b2b-migrate \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --wait
+
+      - name: Atualizar API, worker e scheduler
+        run: |
+          for service in portal-b2b-api portal-b2b-worker portal-b2b-scheduler; do
+            gcloud run services update "$service" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --image="$IMAGE" \
+              --quiet
+          done
+
+      - name: Validar produção
+        run: |
+          curl --fail --silent --show-error \
+            --retry 12 --retry-delay 10 --retry-all-errors \
+            https://app.nydsoftwares.com.br/api/v1/health/ready

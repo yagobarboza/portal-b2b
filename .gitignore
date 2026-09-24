@@ -29,6 +29,9 @@ htmlcov/
 *.log
 logs/
 
+# Credenciais temporárias geradas pelo google-github-actions/auth
+gha-creds-*.json
+
 # Docker
 postgres_data/
 redis_data/

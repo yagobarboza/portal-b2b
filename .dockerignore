@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 tests/
 backups/
+gha-creds-*.json
