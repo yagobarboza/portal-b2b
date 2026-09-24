@@ -71,10 +71,10 @@ _DOMAIN_WINDOW = 60       # segundos
 
 async def _check_domain_rate_limit(domain: str) -> None:
     """Rate limit por domínio via Redis (anti-enumeração, multi-instância)."""
-    allowed, _ = await check_rate_limit(
+    blocked = await check_rate_limit(
         f"domain:{domain.lower()}", _DOMAIN_RATE_LIMIT, _DOMAIN_WINDOW
     )
-    if not allowed:
+    if blocked:
         raise RateLimitedError("Muitas tentativas. Tente novamente em instantes.")
 
 
